@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the custom-kbr 65% keyboard PCB with the KiCad (pcbnew) Python API.
+"""Generate the custom-kbr 60% keyboard PCB with the KiCad (pcbnew) Python API.
 
 Stages:
   1. place switches, diodes, MCU + USB circuitry, mounting holes; assign nets
@@ -265,48 +265,41 @@ def write_project_rules(pro):
 
 # --- keyboard-specific placement -------------------------------------------
 
-# Tada68-compatible board: outline, M2 mounting holes and USB-C position follow the
-# open-source ta-65 rev4 (github.com/evyd13/ta-65, CC BY-SA 4.0), which fits cases made
-# for the Tada68 / DZ65 / KBD67 rev2 family. Its key grid has the same origin as layout.py
-# (top-left corner of Esc at 0, 0), so key positions carry over unchanged.
+# GH60-compatible 60% board: outline, M2 mounting holes and USB-C position follow ai03's
+# open-source hotswap JP60 (github.com/ai03-2725/JP60, MIT), cross-checked against the
+# original GH60 (github.com/komar007/gh60). Coordinates are relative to the key grid of
+# layout.py (top-left corner of Esc at 0, 0); the outline is inset 0.375 / 0.325 mm from the
+# 15u x 5u key area, with a small tab for the USB-C receptacle and the GH60 side slots.
 OUTLINE = [
-    ("line", (4.1672, 0.5953), (13.2612, 0.5953)),
-    ("arc", (13.2612, 0.5953), (13.5225, 0.5349), (13.7307, 0.3660)),
-    ("arc", (13.7307, 0.3660), (14.0631, 0.0964), (14.4800, 0.0000)),
-    ("line", (14.4800, 0.0000), (23.1200, 0.0000)),          # USB-C tab
-    ("arc", (23.1200, 0.0000), (23.5369, 0.0964), (23.8693, 0.3660)),
-    ("arc", (23.8693, 0.3660), (24.0775, 0.5349), (24.3388, 0.5953)),
-    ("line", (24.3388, 0.5953), (109.6900, 0.5953)),
-    ("arc", (109.6900, 0.5953), (110.6435, 0.8372), (111.3663, 1.5044)),
-    ("arc", (111.3663, 1.5044), (114.3000, 3.0953), (117.2335, 1.5044)),   # notch
-    ("arc", (117.2335, 1.5044), (117.9565, 0.8372), (118.9100, 0.5953)),
-    ("line", (118.9100, 0.5953), (185.8900, 0.5953)),
-    ("arc", (185.8900, 0.5953), (186.8435, 0.8372), (187.5663, 1.5044)),
-    ("arc", (187.5663, 1.5044), (190.5000, 3.0953), (193.4335, 1.5044)),   # notch
-    ("arc", (193.4335, 1.5044), (194.1565, 0.8372), (195.1100, 0.5953)),
-    ("line", (195.1100, 0.5953), (300.6330, 0.5953)),
-    ("arc", (300.6330, 0.5953), (302.3168, 1.2928), (303.0142, 2.9766)),
-    ("line", (303.0142, 2.9766), (303.0140, 92.2735)),
-    ("arc", (303.0140, 92.2735), (302.3168, 93.9573), (300.6330, 94.6547)),
-    ("line", (300.6330, 94.6547), (195.1100, 94.6548)),
-    ("arc", (195.1100, 94.6548), (194.1565, 94.4129), (193.4337, 93.7457)),
-    ("arc", (193.4337, 93.7457), (190.5000, 92.1548), (187.5665, 93.7457)),  # notch
-    ("arc", (187.5665, 93.7457), (186.8435, 94.4129), (185.8900, 94.6548)),
-    ("line", (185.8900, 94.6548), (118.9100, 94.6548)),
-    ("arc", (118.9100, 94.6548), (117.9565, 94.4129), (117.2337, 93.7457)),
-    ("arc", (117.2337, 93.7457), (114.3000, 92.1548), (111.3665, 93.7457)),  # notch
-    ("arc", (111.3665, 93.7457), (110.6435, 94.4129), (109.6900, 94.6548)),
-    ("line", (109.6900, 94.6548), (4.7625, 94.6548)),
-    ("arc", (4.7625, 94.6548), (2.6578, 93.7830), (1.7859, 91.6782)),
-    ("line", (1.7859, 91.6782), (1.7859, 2.9766)),
-    ("arc", (1.7859, 2.9766), (2.4834, 1.2928), (4.1672, 0.5953)),
+    ("line", (13.0750, -0.1750), (24.0750, -0.1750)),        # USB-C tab
+    ("arc", (24.0750, -0.1750), (24.2214, 0.1786), (24.5750, 0.3250)),
+    ("line", (24.5750, 0.3250), (283.3750, 0.3250)),
+    ("arc", (283.3750, 0.3250), (284.7892, 0.9108), (285.3750, 2.3250)),
+    ("line", (285.3750, 2.3250), (285.3750, 55.4250)),
+    ("line", (285.3750, 55.4250), (281.5750, 55.4250)),       # right side slot
+    ("arc", (281.5750, 55.4250), (280.5851, 55.8351), (280.1750, 56.8250)),
+    ("arc", (280.1750, 56.8250), (280.5851, 57.8149), (281.5750, 58.2250)),
+    ("line", (281.5750, 58.2250), (285.3750, 58.2250)),
+    ("line", (285.3750, 58.2250), (285.3750, 92.9250)),
+    ("arc", (285.3750, 92.9250), (284.7892, 94.3392), (283.3750, 94.9250)),
+    ("line", (283.3750, 94.9250), (2.3750, 94.9250)),
+    ("arc", (2.3750, 94.9250), (0.9608, 94.3392), (0.3750, 92.9250)),
+    ("line", (0.3750, 92.9250), (0.3750, 58.2250)),
+    ("line", (0.3750, 58.2250), (4.1750, 58.2250)),           # left side slot
+    ("arc", (4.1750, 58.2250), (5.1649, 57.8149), (5.5750, 56.8250)),
+    ("arc", (5.5750, 56.8250), (5.1649, 55.8351), (4.1750, 55.4250)),
+    ("line", (4.1750, 55.4250), (0.3750, 55.4250)),
+    ("line", (0.3750, 55.4250), (0.3750, 2.3250)),
+    ("arc", (0.3750, 2.3250), (0.9608, 0.9108), (2.3750, 0.3250)),
+    ("line", (2.3750, 0.3250), (12.5750, 0.3250)),
+    ("arc", (12.5750, 0.3250), (12.9286, 0.1786), (13.0750, -0.1750)),
 ]
-MOUNT_HOLES = [(25.0031, 28.5750), (260.1518, 28.5750), (128.5876, 47.6250),
-               (25.0031, 85.7251), (188.1189, 85.7251), (266.7002, 85.7251)]
+# GH60 standard holes (JP60 leaves the one next to the spacebar undrilled; it's drilled here)
+MOUNT_HOLES = [(25.575, 28.225), (260.425, 28.225), (128.575, 47.325), (190.875, 85.525)]
 STANDOFF_R = 2.5        # case standoff radius: bottom-side parts must stay this far from a hole
-# ta-65 has the receptacle's front shield pins 0.15 mm from the edge; 0.35 mm further in
-# they keep the 0.3 mm copper-to-edge rule and the mouth still sticks out 1.3 mm.
-USB_POS = (18.8, 2.35)  # HRO TYPE-C-31-M-12, between Esc and 1
+# Same position as JP60 (same receptacle): the mouth sticks out 1.1 mm past the USB tab
+# and the front shield pins stay 0.7 mm from the edge.
+USB_POS = (18.574, 2.373)  # HRO TYPE-C-31-M-12, between Esc and 1
 # The receptacle sits where Esc's and 1's hotswap sockets would be, so those two switches
 # are turned 180 degrees (sockets in the lower half of the key). A keycap doesn't care.
 USB_KEYS = ("Esc", "1")
@@ -437,8 +430,7 @@ def place_mcu(bb):
     part(C, "C3", "100nF", 2.2, 6.8, 90, {"1": "+5V", "2": "GND"})
     part("C_0805_2012Metric", "C7", "10uF", 4.6, 7.6, 90, {"1": "+5V", "2": "GND"})
     part(R, "R1", "10k", 7.0, 6.8, 90, {"1": "+5V", "2": "RESET"})
-    # 17.5 mm right of U1: any closer and it overlaps the notch in the bottom edge
-    part("SW_SPST_SKQG_WithoutStem", "SW0", "RESET", 17.5, 7.8, 0, {"1": "RESET", "2": "GND"})
+    part("SW_SPST_SKQG_WithoutStem", "SW0", "RESET", 13.5, 7.8, 0, {"1": "RESET", "2": "GND"})
     # right (pins 1-11): UVCC decoupling, UCAP, USB series resistors
     part(C, "C9", "100nF", 6.8, -4.0, 0, {"1": "+5V", "2": "GND"})
     # below-right corner, so pins 5-11 keep a clear escape path to the right
@@ -559,7 +551,7 @@ def _centroid(points):
 
 
 def place_mounting_holes(bb):
-    """M2 holes at the Tada68 positions (non-plated: hotswap sockets come close to some)."""
+    """M2 holes at the GH60 positions (non-plated: hotswap sockets come close to some)."""
     for i, (x, y) in enumerate(MOUNT_HOLES, start=1):
         bb.footprint("MountingHole_2.2mm_M2", f"H{i}", "M2", x, y)
     return MOUNT_HOLES
@@ -1154,7 +1146,7 @@ def main():
 
     route_usb_pair(bb)
     route_power_feed(bb)
-    bb.text(f"custom-kbr 65% ({SWITCH})", 158, 91.5, pcbnew.B_SilkS, mirror=True)
+    bb.text(f"custom-kbr 60% ({SWITCH})", 158, 91.5, pcbnew.B_SilkS, mirror=True)
 
     with open(os.path.join(BUILD, "pinmap.json"), "w") as f:
         json.dump({"rows": [pinmap[f"ROW{r}"] for r in range(N_ROWS)],

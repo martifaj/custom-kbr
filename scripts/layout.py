@@ -1,58 +1,59 @@
-"""Single source of truth for the 65% layout, the switch matrix and the MCU pinout.
+"""Single source of truth for the 60% layout, the switch matrix and the MCU pinout.
 
 Everything else (PCB generator, QMK config) imports from here, so changing a key
 here changes both the board and the firmware.
 """
 
 U = 19.05  # 1u key pitch in mm
+WIDTH_U = 15  # every row is 15u wide (standard 60%)
+QMK_LAYOUT = "LAYOUT_60_ansi"
 
-# (label, x, y, w, row, col, qmk_keycode) -- x/y/w in key units, KLE style
+# (label, width_u, qmk_keycode) per row, left to right
 _ROWS = [
     # row 0
     [("Esc", 1, "QK_GESC"), ("1", 1, "KC_1"), ("2", 1, "KC_2"), ("3", 1, "KC_3"),
      ("4", 1, "KC_4"), ("5", 1, "KC_5"), ("6", 1, "KC_6"), ("7", 1, "KC_7"),
      ("8", 1, "KC_8"), ("9", 1, "KC_9"), ("0", 1, "KC_0"), ("-", 1, "KC_MINS"),
-     ("=", 1, "KC_EQL"), ("Backspace", 2, "KC_BSPC"), ("`", 1, "KC_GRV")],
+     ("=", 1, "KC_EQL"), ("Backspace", 2, "KC_BSPC")],
     # row 1
     [("Tab", 1.5, "KC_TAB"), ("Q", 1, "KC_Q"), ("W", 1, "KC_W"), ("E", 1, "KC_E"),
      ("R", 1, "KC_R"), ("T", 1, "KC_T"), ("Y", 1, "KC_Y"), ("U", 1, "KC_U"),
      ("I", 1, "KC_I"), ("O", 1, "KC_O"), ("P", 1, "KC_P"), ("[", 1, "KC_LBRC"),
-     ("]", 1, "KC_RBRC"), ("\\", 1.5, "KC_BSLS"), ("Del", 1, "KC_DEL")],
+     ("]", 1, "KC_RBRC"), ("\\", 1.5, "KC_BSLS")],
     # row 2
     [("Caps", 1.75, "KC_CAPS"), ("A", 1, "KC_A"), ("S", 1, "KC_S"), ("D", 1, "KC_D"),
      ("F", 1, "KC_F"), ("G", 1, "KC_G"), ("H", 1, "KC_H"), ("J", 1, "KC_J"),
      ("K", 1, "KC_K"), ("L", 1, "KC_L"), (";", 1, "KC_SCLN"), ("'", 1, "KC_QUOT"),
-     ("Enter", 2.25, "KC_ENT"), ("PgUp", 1, "KC_PGUP")],
+     ("Enter", 2.25, "KC_ENT")],
     # row 3
     [("LShift", 2.25, "KC_LSFT"), ("Z", 1, "KC_Z"), ("X", 1, "KC_X"), ("C", 1, "KC_C"),
      ("V", 1, "KC_V"), ("B", 1, "KC_B"), ("N", 1, "KC_N"), ("M", 1, "KC_M"),
-     (",", 1, "KC_COMM"), (".", 1, "KC_DOT"), ("/", 1, "KC_SLSH"),
-     ("RShift", 1.75, "KC_RSFT"), ("Up", 1, "KC_UP"), ("PgDn", 1, "KC_PGDN")],
+     (",", 1, "KC_COMM"), (".", 1, "KC_DOT"), ("/", 1, "KC_SLSH"), ("RShift", 2.75, "KC_RSFT")],
     # row 4
     [("LCtrl", 1.25, "KC_LCTL"), ("LGui", 1.25, "KC_LGUI"), ("LAlt", 1.25, "KC_LALT"),
-     ("Space", 6.25, "KC_SPC"), ("RAlt", 1, "KC_RALT"), ("Fn", 1, "MO(1)"),
-     ("RCtrl", 1, "KC_RCTL"), ("Left", 1, "KC_LEFT"), ("Down", 1, "KC_DOWN"),
-     ("Right", 1, "KC_RGHT")],
+     ("Space", 6.25, "KC_SPC"), ("RAlt", 1.25, "KC_RALT"), ("RGui", 1.25, "KC_RGUI"),
+     ("Fn", 1.25, "MO(1)"), ("RCtrl", 1.25, "KC_RCTL")],
 ]
 
-# Matrix column for each key, row by row (5 rows x 15 cols, chosen so that each
+# Matrix column for each key, row by row (5 rows x 14 cols, chosen so that each
 # column stays roughly vertical across rows).
 _COLS = [
-    list(range(15)),
-    list(range(15)),
-    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14],
-    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14],
-    [0, 1, 2, 6, 9, 10, 11, 12, 13, 14],
+    list(range(14)),
+    list(range(14)),
+    list(range(12)) + [13],
+    list(range(11)) + [13],
+    [0, 1, 2, 6, 10, 11, 12, 13],
 ]
 
-# Fn layer for the default QMK keymap (same order as KEYS)
+# Fn layer for the default QMK keymap: F-keys on the number row, arrows on IJKL with
+# Home/PgUp/PgDn/End around them, media on the bottom right, bootloader on Fn+\\.
 _FN_LAYER = {
     "Esc": "KC_GRV", "1": "KC_F1", "2": "KC_F2", "3": "KC_F3", "4": "KC_F4",
     "5": "KC_F5", "6": "KC_F6", "7": "KC_F7", "8": "KC_F8", "9": "KC_F9",
     "0": "KC_F10", "-": "KC_F11", "=": "KC_F12", "Backspace": "KC_DEL",
-    "`": "QK_BOOT", "Del": "KC_INS", "PgUp": "KC_HOME", "PgDn": "KC_END",
-    "Up": "KC_VOLU", "Down": "KC_VOLD", "Left": "KC_MPRV", "Right": "KC_MNXT",
-    "Space": "KC_MPLY",
+    "Y": "KC_HOME", "U": "KC_PGUP", "I": "KC_UP", "O": "KC_PGDN", "P": "KC_END",
+    "J": "KC_LEFT", "K": "KC_DOWN", "L": "KC_RGHT", "[": "KC_PSCR", "]": "KC_INS",
+    "\\": "QK_BOOT", "M": "KC_MUTE", ",": "KC_VOLD", ".": "KC_VOLU", "Space": "KC_MPLY",
 }
 
 
@@ -75,7 +76,7 @@ def _build():
         for (label, w, kc), c in zip(row, cols):
             keys.append(Key(label, x, r, w, r, c, kc))
             x += w
-        assert abs(x - 16) < 1e-9, f"row {r} is {x}u wide, expected 16u"
+        assert abs(x - WIDTH_U) < 1e-9, f"row {r} is {x}u wide, expected {WIDTH_U}u"
     seen = set()
     for k in keys:
         assert (k.row, k.col) not in seen, f"duplicate matrix position {(k.row, k.col)}"
@@ -85,9 +86,9 @@ def _build():
 
 KEYS = _build()
 N_ROWS = 5
-N_COLS = 15
-BOARD_W = 16 * U   # 304.8 mm
-BOARD_H = 5 * U    # 95.25 mm
+N_COLS = 14
+BOARD_W = WIDTH_U * U   # 285.75 mm key area
+BOARD_H = 5 * U         # 95.25 mm
 
 # ATmega32U4 (QFN-44 / TQFP-44 share this pinout): pin number -> port name.
 # These are the GPIOs free for the matrix; PE2 (HWB), XTAL, USB and power are fixed.

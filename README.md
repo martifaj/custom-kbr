@@ -1,26 +1,27 @@
-# custom-kbr — scripted 65% keyboard PCB
+# custom-kbr — scripted 60% keyboard PCB
 
-A 68-key 65% ANSI hotswap keyboard PCB generated entirely with the KiCad 9 `pcbnew` Python API,
+A 61-key 60% ANSI hotswap keyboard PCB generated entirely with the KiCad 9 `pcbnew` Python API,
 autorouted with Freerouting, plus a matching QMK keyboard definition. The outline, screw holes and
-USB-C position follow the Tada68 form factor, so it should fit cases made for Tada68 / DZ65 / KBD67 rev2
-style boards (see "Before ordering").
+USB-C position follow the GH60 standard, so it should fit standard 60% cases (see "Before ordering").
+Earlier designs are tagged in git: `v1-tada68-65` (68-key 65%, Tada68 form factor) and `v0-tall-board`.
 
 ## Design
 
 | | |
 |---|---|
-| Layout | 65% ANSI, 68 keys (2u Backspace, 2.25u Enter / LShift, 1.75u RShift, 6.25u Space, arrows + Del/PgUp/PgDn/`) |
-| Board | Tada68 form factor: 301.2 × 94.65 mm with the ta-65 outline (USB tab and four case notches), 2 layers, 1.6 mm, GND pour both sides |
-| Switches | Cherry MX compatible, **Kailh hotswap sockets** (CPG151101S11) on the bottom, 3- or 5-pin switches, PCB-mount stabilizers on 2u+ keys; the spacebar stabilizer mounts upside down (wire towards the back), as on other Tada68 boards. `--switch solder` builds a soldered variant (not checked against the new outline) |
-| Matrix | 5 × 15, COL2ROW, one 1N4148W (SOD-123) per key on the bottom side |
+| Layout | Standard 60% ANSI, 61 keys (2u Backspace, 2.25u Enter / LShift, 2.75u RShift, 6.25u Space, eight 1.25u mods) |
+| Board | GH60 form factor: 285 × 94.6 mm with a small USB tab and the GH60 side slots, 2 layers, 1.6 mm, GND pour both sides |
+| Switches | Cherry MX compatible, **Kailh hotswap sockets** (CPG151101S11) on the bottom, 3- or 5-pin switches, PCB-mount stabilizers on 2u+ keys; the spacebar stabilizer mounts upside down (wire towards the back), as on other GH60 hotswap boards. `--switch solder` builds a soldered variant (not checked against the new outline) |
+| Matrix | 5 × 14, COL2ROW, one 1N4148W (SOD-123) per key on the bottom side |
 | MCU | ATmega32U4-MU (QFN-44), 16 MHz crystal, DFU bootloader (reset button enters it via HWB pull-down) |
-| USB | USB-C (HRO TYPE-C-31-M-12) at the Tada68 position between Esc and 1, 5.1k CC pull-downs (USB 2.0 device), USBLC6-2SC6 ESD, 500 mA PTC, 22 Ω series resistors |
-| Mounting | 6 × M2 non-plated holes at the Tada68 positions |
+| USB | USB-C (HRO TYPE-C-31-M-12) at the GH60 position between Esc and 1, 5.1k CC pull-downs (USB 2.0 device), USBLC6-2SC6 ESD, 500 mA PTC, 22 Ω series resistors |
+| Mounting | 4 × M2 non-plated holes at the GH60 positions (plus the two side slots in the outline) |
 
 All SMD parts, including the sockets, are on the bottom side. The top is switches only, so a plate fits.
 Hotswap sockets cover the upper half of every key on the bottom, so a few switches are turned 180°
 (their socket moves to the lower half; keycaps don't care): Esc and 1, to make room for the USB-C
-receptacle, fuse, ESD and CC resistors, and any key whose socket would sit on a case standoff (H and Down).
+receptacle, fuse, ESD and CC resistors, and any key whose socket would sit on a case standoff (H).
+ai03's JP60 turns the same three keys.
 The script finds those automatically and stops if a hole can't be cleared that way.
 Parts that are fixed by design (MCU, USB, crystal) are placed in `scripts/generate_pcb.py`;
 matrix pins are assigned automatically so the fan-out around the MCU doesn't cross,
@@ -31,7 +32,8 @@ and the result is written to `build/pinmap.json` and fed into the QMK config.
 - `scripts/layout.py` — key layout, matrix and MCU pinout (single source of truth)
 - `scripts/gen_footprints.py` — writes the Kailh MX hotswap footprints (1u–6.25u, with stabilizer holes, plus a 6.25u variant with the stabilizer upside down) into `lib/kbr.pretty`
 - `scripts/generate_pcb.py` — builds the board: placement, nets, design rules, autoroute, GND pours.
-  Outline, holes and USB-C position from [ta-65 rev4](https://github.com/evyd13/ta-65) by evyd13 (CC BY-SA 4.0)
+  Outline, holes and USB-C position from ai03's hotswap [JP60](https://github.com/ai03-2725/JP60) (MIT),
+  cross-checked against the original [GH60](https://github.com/komar007/gh60)
 - `scripts/fab.sh` — DRC, gerbers + drill (zip), bottom pick-and-place, BOM, renders
 - `scripts/gen_case_data.py`, `scripts/build_case.sh`, `case/case.scad` — 3D-printed case and plate (see below)
 - `scripts/gen_qmk.py` — writes `firmware/qmk/keyboards/custom_kbr/` (keyboard.json + default keymap)
@@ -75,8 +77,7 @@ so KiCad's DRC checks the same rules the router used (0.2 mm tracks / 0.15 mm cl
 `case/case.scad` is a tray-mount case plus an optional switch plate, built around the real board:
 `scripts/gen_case_data.py` writes `case/kbr_data.scad` (outline, M2 holes, USB-C, reset button and switch
 positions, all read from `build/custom-kbr.kicad_pcb`), so re-run it after changing the board.
-Since the board now follows the Tada68 form factor, a store-bought case and plate for that family are an
-alternative to printing.
+Since the board follows the GH60 standard, a store-bought 60% case and plate are an alternative to printing.
 
 ```sh
 scripts/build_case.sh                          # -> build/case/{case,plate}_{left,right}.stl
@@ -90,11 +91,11 @@ openscad case/case.scad                        # interactive preview (part = "as
 - **Height:** 4.5 mm under the PCB (sockets 1.8 mm, USB-C receptacle 3.26 mm). The rim is flush with the plate top.
 - **Typing angle** 6° built into the bottom (`typing_angle`, 0 = flat). 6 recesses for 10 mm rubber bumpers.
 - **USB-C:** 13 × 7.5 mm opening in the back wall, sized for most cable overmolds. **Reset:** paperclip hole in the floor under the button.
-- **Split:** the case is 309 mm wide, so it prints as two halves (172 and 145 × 105 mm, bottom face on the bed, no supports),
+- **Split:** the case is 293 mm wide, so it prints as two halves (172 and 129 × 105 mm, bottom face on the bed, no supports),
   joined by 4 vertical dovetails in the floor. Glue them; once the PCB is screwed to both halves the whole case is stiff.
   `split=false` gives one piece for beds of 320 mm or more.
 - **Plate** (optional, 1.5 mm, cutouts for PCB-mount stabilizer housings): it floats on the switches and stops hotswap
-  switches from coming out with the keycaps. It is split along key boundaries (188 + 150 mm), so each half is held by its own switches.
+  switches from coming out with the keycaps. It is split along key boundaries (190 + 133 mm), so each half is held by its own switches.
   Print in PETG if you can; PLA works.
 
 Assembly: screw the PCB in first, then press the switches through the plate into the sockets.
@@ -108,19 +109,18 @@ qmk compile -kb custom_kbr -km default
 qmk flash   -kb custom_kbr -km default   # press the reset button on the back
 ```
 
-Fn layer: F1–F12 on the number row, Fn+` = bootloader, media on arrows/space.
+Fn layer: F1–F12 on the number row, Fn+Esc = `, arrows on IJKL (Home/PgUp/PgDn/End on Y/U/O/P),
+Fn+Backspace = Del, Fn+[ / ] = PrtSc / Ins, mute/volume on M , . , play on Space, Fn+\ = bootloader.
 
 ## Before ordering
 
 - Open the board in KiCad and look at it. Autorouted boards work but are not pretty.
   D+/D− run about 12 cm as a pair (the MCU is under the spacebar, the connector top-left); fine for full-speed USB.
 - No schematic is generated — the netlist lives in `generate_pcb.py`. DRC parity checks are therefore off.
-- Case fit is unverified: outline, holes and USB-C position are copied from ta-65 rev4, which says it fits Tada68 cases.
-  Compare them with your case (or its stock PCB) before ordering. The receptacle sits 0.35 mm further in than on
-  ta-65 (to keep its shield pins 0.3 mm from the edge), so its mouth sticks out 1.3 mm instead of 1.65 mm.
-- If you use a commercial plate: ta-65 also mounts the spacebar stabilizer upside down, so plates for this family
-  should match, but check its stabilizer cutouts. Plates come in layout variants; this board needs 2u Backspace,
-  1.75u RShift and a 6.25u space with three 1u keys to its right.
+- Case fit is unverified against a real case: outline, holes and USB-C position match JP60 and the original GH60,
+  but GH60 cases differ in where their USB opening is. Check that yours has it top-left, behind Esc / 1.
+- If you use a commercial plate: JP60 also mounts the spacebar stabilizer upside down, so check that the plate's
+  spacebar cutouts suit that. The layout is standard ANSI 60%, which practically every 60% plate supports.
 - The hotswap footprint is generated from the commonly used Kailh CPG151101S11 dimensions. Print the board 1:1 and check it against a real socket before ordering.
 - Crystal load caps (22 pF) assume a ~18–20 pF CL crystal; adjust for your part.
 - The VID/PID in `keyboard.json` are placeholders.

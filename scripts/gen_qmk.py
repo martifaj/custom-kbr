@@ -9,7 +9,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from layout import KEYS  # noqa: E402
+from layout import KEYS, QMK_LAYOUT  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "firmware", "qmk", "keyboards", "custom_kbr")
@@ -37,12 +37,12 @@ def main():
         "diode_direction": "COL2ROW",
         "matrix_pins": {"rows": pins["rows"], "cols": pins["cols"]},
         "features": {"bootmagic": True, "extrakey": True, "mousekey": False, "nkro": True},
-        "layouts": {"LAYOUT_65_ansi": {"layout": layout}},
+        "layouts": {QMK_LAYOUT: {"layout": layout}},
     }
     keymap = {
         "keyboard": "custom_kbr",
         "keymap": "default",
-        "layout": "LAYOUT_65_ansi",
+        "layout": QMK_LAYOUT,
         "layers": [[k.keycode for k in KEYS], [k.fn_keycode for k in KEYS]],
     }
 

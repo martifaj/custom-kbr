@@ -14,7 +14,7 @@ import os
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LIB = os.path.join(ROOT, "lib", "kbr.pretty")
 
-WIDTHS = [1, 1.25, 1.5, 1.75, 2, 2.25, 6.25]
+WIDTHS = [1, 1.25, 1.5, 1.75, 2, 2.25, 2.75, 6.25]
 
 CENTER_HOLE = 4.0
 PEG_HOLE = 1.75                  # 5-pin switch plastic pegs at (+-5.08, 0)
@@ -27,7 +27,7 @@ SOCKET_OUTLINE = (-5.95, -6.95, 4.75, -0.6)      # plastic body (fab/silk outlin
 # PCB-mount (Cherry) stabilizer: x offset per key width; holes at y=-7.0 (3.05) and y=+8.24 (4.0)
 STAB_X = {2: 11.9, 2.25: 11.9, 2.75: 11.9, 6.25: 50.0, 7: 57.15}
 # Widths that also get a variant with the stabilizer upside down (holes mirrored in Y). On a
-# standard-outline 65% board the bottom row is too close to the edge for the 4 mm hole, so
+# standard-outline (GH60 / Tada68) board the bottom row is too close to the edge for the 4 mm hole, so
 # the spacebar stabilizer is mounted with its wire towards the back.
 FLIP_STAB_WIDTHS = [6.25]
 
