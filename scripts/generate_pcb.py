@@ -21,7 +21,8 @@ import sys
 import pcbnew
 
 sys.path.insert(0, os.path.dirname(__file__))
-from layout import (KEYS, N_ROWS, N_COLS, BOARD_W, BOARD_H, MCU_GPIO, MCU_FIXED)  # noqa: E402
+from layout import (KEYS, N_ROWS, N_COLS, MCU_GPIO, MCU_FIXED)  # noqa: E402
+from gen_footprints import SOCKET_OUTLINE, SOCKET_PADS, SOCKET_PAD_SIZE, FLIP_STAB_WIDTHS  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LIB = os.path.join(ROOT, "lib", "kbr.pretty")
@@ -62,6 +63,35 @@ def to_mm(p):
     return pcbnew.ToMM(p.x), pcbnew.ToMM(p.y)
 
 
+def arc_points(start, mid, end, n=8):
+    """n+1 points along the circular arc through start, mid and end."""
+    (x1, y1), (x2, y2), (x3, y3) = start, mid, end
+    d = 2 * (x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2))
+    ux = ((x1**2 + y1**2) * (y2 - y3) + (x2**2 + y2**2) * (y3 - y1) + (x3**2 + y3**2) * (y1 - y2)) / d
+    uy = ((x1**2 + y1**2) * (x3 - x2) + (x2**2 + y2**2) * (x1 - x3) + (x3**2 + y3**2) * (x2 - x1)) / d
+    r = math.hypot(x1 - ux, y1 - uy)
+    a1, a2, a3 = (math.atan2(y - uy, x - ux) for x, y in (start, mid, end))
+    # sweep from a1 to a3 in the direction that passes through a2
+    sweep = (a3 - a1) % (2 * math.pi)
+    if (a2 - a1) % (2 * math.pi) > sweep:
+        sweep -= 2 * math.pi
+    return [(ux + r * math.cos(a1 + sweep * k / n), uy + r * math.sin(a1 + sweep * k / n)) for k in range(n + 1)]
+
+
+def outline_chords(segments):
+    """The outline as straight (a, b) pieces, arcs split into chords."""
+    out = []
+    for kind, *p in segments:
+        pts = [p[0], p[1]] if kind == "line" else arc_points(*p)
+        out += list(zip(pts, pts[1:]))
+    return out
+
+
+def outline_bbox(segments):
+    pts = [q for a, b in outline_chords(segments) for q in (a, b)]
+    return (min(x for x, _ in pts), min(y for _, y in pts), max(x for x, _ in pts), max(y for _, y in pts))
+
+
 # --- board construction -----------------------------------------------------
 
 class BoardBuilder:
@@ -93,33 +123,18 @@ class BoardBuilder:
                 pad.SetNet(self.net(pads[pad.GetNumber()]))
         return fp
 
-    def outline(self, w, h, r=1.0):
-        """Rounded rectangle on Edge.Cuts."""
-        def seg(x1, y1, x2, y2):
-            s = pcbnew.PCB_SHAPE(self.board, pcbnew.SHAPE_T_SEGMENT)
-            s.SetStart(pt(x1, y1))
-            s.SetEnd(pt(x2, y2))
-            s.SetLayer(pcbnew.Edge_Cuts)
-            s.SetWidth(mm(0.1))
-            self.board.Add(s)
-
-        def arc(cx, cy, sx, sy, deg):
-            a = pcbnew.PCB_SHAPE(self.board, pcbnew.SHAPE_T_ARC)
-            a.SetCenter(pt(cx, cy))
-            a.SetStart(pt(sx, sy))
-            a.SetArcAngleAndEnd(pcbnew.EDA_ANGLE(deg, pcbnew.DEGREES_T), True)
-            a.SetLayer(pcbnew.Edge_Cuts)
-            a.SetWidth(mm(0.1))
-            self.board.Add(a)
-
-        seg(r, 0, w - r, 0)
-        seg(w, r, w, h - r)
-        seg(w - r, h, r, h)
-        seg(0, h - r, 0, r)
-        arc(w - r, r, w - r, 0, 90)
-        arc(w - r, h - r, w, h - r, 90)
-        arc(r, h - r, r, h, 90)
-        arc(r, r, 0, r, 90)
+    def outline(self, segments):
+        """Board outline on Edge.Cuts from ("line", start, end) / ("arc", start, mid, end)."""
+        for kind, *p in segments:
+            shape = pcbnew.PCB_SHAPE(self.board, pcbnew.SHAPE_T_SEGMENT if kind == "line" else pcbnew.SHAPE_T_ARC)
+            if kind == "line":
+                shape.SetStart(pt(*p[0]))
+                shape.SetEnd(pt(*p[1]))
+            else:
+                shape.SetArcGeometry(pt(*p[0]), pt(*p[1]), pt(*p[2]))
+            shape.SetLayer(pcbnew.Edge_Cuts)
+            shape.SetWidth(mm(0.1))
+            self.board.Add(shape)
 
     def text(self, s, x, y, layer, size=1.5, mirror=False):
         t = pcbnew.PCB_TEXT(self.board)
@@ -152,11 +167,16 @@ class BoardBuilder:
         self.board.Add(v)
         return v
 
-    def edge_keepout(self, w, h, width=0.35):
+    def edge_keepout(self, segments, width=0.35):
         """Track/via keep-out strips along the board edge. Freerouting ignores KiCad's
-        copper-to-edge clearance, but it does respect keep-outs."""
-        for x0, y0, x1, y1 in [(0, 0, w, width), (0, h - width, w, h),
-                               (0, 0, width, h), (w - width, 0, w, h)]:
+        copper-to-edge clearance, but it does respect keep-outs. One thin rectangle
+        straddling each edge piece (arcs split into chords)."""
+        for a, b in outline_chords(segments):
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            n = math.hypot(dx, dy)
+            if n < 1e-6:
+                continue
+            nx, ny = -dy / n * width, dx / n * width
             z = pcbnew.ZONE(self.board)
             z.SetIsRuleArea(True)
             z.SetLayerSet(pcbnew.LSET.AllCuMask())
@@ -167,17 +187,19 @@ class BoardBuilder:
             z.SetDoNotAllowCopperPour(False)
             poly = z.Outline()
             poly.NewOutline()
-            for x, y in [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]:
+            for x, y in [(a[0] + nx, a[1] + ny), (b[0] + nx, b[1] + ny), (b[0] - nx, b[1] - ny), (a[0] - nx, a[1] - ny)]:
                 poly.Append(mm(x), mm(y))
             self.board.Add(z)
 
-    def zone(self, net, layer, w, h, inset=0.3):
+    def zone(self, net, layer, bbox):
+        """Pour over the outline's bounding box; the filler clips it to the board edge."""
         z = pcbnew.ZONE(self.board)
         z.SetLayer(layer)
         z.SetNet(self.net(net))
         poly = z.Outline()
         poly.NewOutline()
-        for x, y in [(inset, inset), (w - inset, inset), (w - inset, h - inset), (inset, h - inset)]:
+        x0, y0, x1, y1 = bbox
+        for x, y in [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]:
             poly.Append(mm(x), mm(y))
         z.SetLocalClearance(mm(0.3))
         z.SetMinThickness(mm(0.25))
@@ -243,22 +265,89 @@ def write_project_rules(pro):
 
 # --- keyboard-specific placement -------------------------------------------
 
-# Strip above the top row for the USB-C connector and its parts. Hotswap sockets cover
-# the upper half of every key on the bottom side, so the connector can't sit between keys.
-TOP_MARGIN = 7.5
-# Strip below the bottom row: the spacebar stabilizer's 4 mm holes sit 8.24 mm below the
-# switch centre and would otherwise break through the front edge by 0.7 mm.
-BOTTOM_MARGIN = 1.0
-PCB_H = BOARD_H + TOP_MARGIN + BOTTOM_MARGIN
+# Tada68-compatible board: outline, M2 mounting holes and USB-C position follow the
+# open-source ta-65 rev4 (github.com/evyd13/ta-65, CC BY-SA 4.0), which fits cases made
+# for the Tada68 / DZ65 / KBD67 rev2 family. Its key grid has the same origin as layout.py
+# (top-left corner of Esc at 0, 0), so key positions carry over unchanged.
+OUTLINE = [
+    ("line", (4.1672, 0.5953), (13.2612, 0.5953)),
+    ("arc", (13.2612, 0.5953), (13.5225, 0.5349), (13.7307, 0.3660)),
+    ("arc", (13.7307, 0.3660), (14.0631, 0.0964), (14.4800, 0.0000)),
+    ("line", (14.4800, 0.0000), (23.1200, 0.0000)),          # USB-C tab
+    ("arc", (23.1200, 0.0000), (23.5369, 0.0964), (23.8693, 0.3660)),
+    ("arc", (23.8693, 0.3660), (24.0775, 0.5349), (24.3388, 0.5953)),
+    ("line", (24.3388, 0.5953), (109.6900, 0.5953)),
+    ("arc", (109.6900, 0.5953), (110.6435, 0.8372), (111.3663, 1.5044)),
+    ("arc", (111.3663, 1.5044), (114.3000, 3.0953), (117.2335, 1.5044)),   # notch
+    ("arc", (117.2335, 1.5044), (117.9565, 0.8372), (118.9100, 0.5953)),
+    ("line", (118.9100, 0.5953), (185.8900, 0.5953)),
+    ("arc", (185.8900, 0.5953), (186.8435, 0.8372), (187.5663, 1.5044)),
+    ("arc", (187.5663, 1.5044), (190.5000, 3.0953), (193.4335, 1.5044)),   # notch
+    ("arc", (193.4335, 1.5044), (194.1565, 0.8372), (195.1100, 0.5953)),
+    ("line", (195.1100, 0.5953), (300.6330, 0.5953)),
+    ("arc", (300.6330, 0.5953), (302.3168, 1.2928), (303.0142, 2.9766)),
+    ("line", (303.0142, 2.9766), (303.0140, 92.2735)),
+    ("arc", (303.0140, 92.2735), (302.3168, 93.9573), (300.6330, 94.6547)),
+    ("line", (300.6330, 94.6547), (195.1100, 94.6548)),
+    ("arc", (195.1100, 94.6548), (194.1565, 94.4129), (193.4337, 93.7457)),
+    ("arc", (193.4337, 93.7457), (190.5000, 92.1548), (187.5665, 93.7457)),  # notch
+    ("arc", (187.5665, 93.7457), (186.8435, 94.4129), (185.8900, 94.6548)),
+    ("line", (185.8900, 94.6548), (118.9100, 94.6548)),
+    ("arc", (118.9100, 94.6548), (117.9565, 94.4129), (117.2337, 93.7457)),
+    ("arc", (117.2337, 93.7457), (114.3000, 92.1548), (111.3665, 93.7457)),  # notch
+    ("arc", (111.3665, 93.7457), (110.6435, 94.4129), (109.6900, 94.6548)),
+    ("line", (109.6900, 94.6548), (4.7625, 94.6548)),
+    ("arc", (4.7625, 94.6548), (2.6578, 93.7830), (1.7859, 91.6782)),
+    ("line", (1.7859, 91.6782), (1.7859, 2.9766)),
+    ("arc", (1.7859, 2.9766), (2.4834, 1.2928), (4.1672, 0.5953)),
+]
+MOUNT_HOLES = [(25.0031, 28.5750), (260.1518, 28.5750), (128.5876, 47.6250),
+               (25.0031, 85.7251), (188.1189, 85.7251), (266.7002, 85.7251)]
+STANDOFF_R = 2.5        # case standoff radius: bottom-side parts must stay this far from a hole
+# ta-65 has the receptacle's front shield pins 0.15 mm from the edge; 0.35 mm further in
+# they keep the 0.3 mm copper-to-edge rule and the mouth still sticks out 1.3 mm.
+USB_POS = (18.8, 2.35)  # HRO TYPE-C-31-M-12, between Esc and 1
+# The receptacle sits where Esc's and 1's hotswap sockets would be, so those two switches
+# are turned 180 degrees (sockets in the lower half of the key). A keycap doesn't care.
+USB_KEYS = ("Esc", "1")
 DIODE_OFFSET = (0.0, 5.5)                  # diode position relative to switch centre (mm)
-MCU_POS = (104.0, TOP_MARGIN + 82.5)       # under the spacebar, bottom side
-USB_X = 7 * 19.05                          # between keys "6" and "7"
+MCU_POS = (104.0, 81.9)                    # under the spacebar, bottom side
 SWITCH = "hotswap"                         # or "solder"; set from the command line
 
 
 def key_center(k):
-    cx, cy = k.center_mm
-    return cx, cy + TOP_MARGIN
+    return k.center_mm
+
+
+def socket_rects(cx, cy, rotated):
+    """Hotswap socket body and pads (x0, y0, x1, y1) on the bottom, in board coordinates."""
+    rects = [SOCKET_OUTLINE] + [(x - SOCKET_PAD_SIZE[0] / 2, y - SOCKET_PAD_SIZE[1] / 2,
+                                 x + SOCKET_PAD_SIZE[0] / 2, y + SOCKET_PAD_SIZE[1] / 2)
+                                for x, y in SOCKET_PADS.values()]
+    if rotated:
+        rects = [(-x1, -y1, -x0, -y0) for x0, y0, x1, y1 in rects]
+    return [(cx + x0, cy + y0, cx + x1, cy + y1) for x0, y0, x1, y1 in rects]
+
+
+def rect_distance(x, y, r):
+    x0, y0, x1, y1 = r
+    return math.hypot(max(x0 - x, 0, x - x1), max(y0 - y, 0, y - y1))
+
+
+def rotated_keys():
+    """Keys whose switch is turned 180 degrees: the two under the USB-C receptacle, plus any
+    key whose socket would sit on a case standoff."""
+    rot = {k.label for k in KEYS if k.label in USB_KEYS}
+    for hx, hy in MOUNT_HOLES:
+        for k in KEYS:
+            cx, cy = key_center(k)
+            if min(rect_distance(hx, hy, r) for r in socket_rects(cx, cy, k.label in rot)) >= STANDOFF_R:
+                continue
+            if k.label in rot or k.w != 1 or \
+               min(rect_distance(hx, hy, r) for r in socket_rects(cx, cy, True)) < STANDOFF_R:
+                sys.exit(f"mounting hole ({hx}, {hy}) collides with the socket of {k.label!r}")
+            rot.add(k.label)
+    return rot
 
 
 def switch_center_offset(fp):
@@ -272,6 +361,8 @@ def switch_center_offset(fp):
 
 def place_matrix(bb):
     """Switches on top, one SOD-123 diode per switch on the bottom (COL2ROW)."""
+    rot = rotated_keys() if SWITCH == "hotswap" else set()
+    print("switches turned 180 degrees:", sorted(rot))
     for i, k in enumerate(KEYS, start=1):
         cx, cy = key_center(k)
         col_net, row_net, mid_net = f"COL{k.col}", f"ROW{k.row}", f"SD{i}"
@@ -281,22 +372,31 @@ def place_matrix(bb):
         value = "KEY_" + re.sub(r"[^A-Za-z0-9]+", "_", k.keycode.removeprefix("KC_")).strip("_")
         if SWITCH == "hotswap":
             # generated by gen_footprints.py; origin at switch centre, flipped to the bottom
-            fp = bb.footprint(f"SW_MX_Hotswap_{k.w:.2f}u", f"SW{i}", value, cx, cy, back=True, pads=pads)
+            name = f"SW_MX_Hotswap_{k.w:.2f}u" + ("_FlippedStab" if k.w in FLIP_STAB_WIDTHS else "")
+            fp = bb.footprint(name, f"SW{i}", value, cx, cy, rot=180 if k.label in rot else 0,
+                              back=True, pads=pads)
             fp.Reference().SetVisible(False)  # would collide with the diode label
         else:
             fp = bb.footprint(f"SW_Cherry_MX_{k.w:.2f}u_PCB", f"SW{i}", value, 0, 0, pads=pads)
             dx, dy = switch_center_offset(fp)
             fp.SetPosition(pt(cx - dx, cy - dy))
+        # Diode in the half of the key the socket leaves free. Under the USB-C receptacle
+        # that half is taken too, so those go on the row gap below.
+        dx, dy = DIODE_OFFSET
+        if k.label in USB_KEYS and k.label in rot:
+            dx, dy = 0.0, 9.525
+        elif k.label in rot:
+            dx, dy = -dx, -dy
         # COL2ROW: column -> switch -> diode anode (pad 2) -> cathode (pad 1) -> row
-        bb.footprint("D_SOD-123", f"D{i}", "1N4148W", cx + DIODE_OFFSET[0], cy + DIODE_OFFSET[1],
+        bb.footprint("D_SOD-123", f"D{i}", "1N4148W", cx + dx, cy + dy,
                      back=True, pads={"1": row_net, "2": mid_net})
 
 
 def place_usb(bb):
-    """USB-C receptacle on the top edge (bottom side); fuse, ESD and CC resistors beside it
-    in the strip above the top row."""
-    x = USB_X
-    j1 = bb.footprint("USB_C_Receptacle_HRO_TYPE-C-31-M-12", "J1", "TYPE-C-31-M-12", x, 3.65, rot=180, back=True,
+    """USB-C receptacle on the top edge (bottom side); fuse, ESD and CC resistors beside it,
+    in the upper half of Esc and 1, which their turned-around sockets leave free."""
+    x, y = USB_POS
+    j1 = bb.footprint("USB_C_Receptacle_HRO_TYPE-C-31-M-12", "J1", "TYPE-C-31-M-12", x, y, rot=180, back=True,
                  pads={"A1": "GND", "A12": "GND", "B1": "GND", "B12": "GND", "S1": "GND",
                        "A4": "VBUS", "A9": "VBUS", "B4": "VBUS", "B9": "VBUS",
                        "A5": "CC1", "B5": "CC2",
@@ -306,11 +406,13 @@ def place_usb(bb):
             pad.SetLocalZoneConnection(pcbnew.ZONE_CONNECTION_FULL)
     bb.footprint("Fuse_1206_3216Metric", "F1", "500mA PTC", x - 9.0, 4.0, back=True,
                  pads={"1": "VBUS", "2": "+5V"})
-    # USBLC6-2SC6: 1/6 = I/O1, 3/4 = I/O2, 2 = GND, 5 = VBUS
+    # USBLC6-2SC6: 1/6 = I/O1, 3/4 = I/O2, 2 = GND, 5 = VBUS. The two channels are identical;
+    # D+ on I/O1 lets the pre-routed pair come in from the right without crossing.
     bb.footprint("SOT-23-6", "U2", "USBLC6-2SC6", x + 9.0, 4.0, back=True,
-                 pads={"1": "USB_DN", "6": "USB_DN", "3": "USB_DP", "4": "USB_DP", "2": "GND", "5": "+5V"})
+                 pads={"1": "USB_DP", "6": "USB_DP", "3": "USB_DN", "4": "USB_DN", "2": "GND", "5": "+5V"})
     bb.footprint("R_0603_1608Metric", "R5", "5.1k", x - 13.5, 4.0, rot=90, back=True, pads={"1": "CC1", "2": "GND"})
-    bb.footprint("R_0603_1608Metric", "R6", "5.1k", x + 13.5, 4.0, rot=90, back=True, pads={"1": "CC2", "2": "GND"})
+    # 16.5 mm out: the pre-routed D+/D- pair comes into U2 from the right
+    bb.footprint("R_0603_1608Metric", "R6", "5.1k", x + 16.5, 4.0, rot=90, back=True, pads={"1": "CC2", "2": "GND"})
 
 
 def place_mcu(bb):
@@ -335,7 +437,8 @@ def place_mcu(bb):
     part(C, "C3", "100nF", 2.2, 6.8, 90, {"1": "+5V", "2": "GND"})
     part("C_0805_2012Metric", "C7", "10uF", 4.6, 7.6, 90, {"1": "+5V", "2": "GND"})
     part(R, "R1", "10k", 7.0, 6.8, 90, {"1": "+5V", "2": "RESET"})
-    part("SW_SPST_SKQG_WithoutStem", "SW0", "RESET", 13.5, 7.8, 0, {"1": "RESET", "2": "GND"})
+    # 17.5 mm right of U1: any closer and it overlaps the notch in the bottom edge
+    part("SW_SPST_SKQG_WithoutStem", "SW0", "RESET", 17.5, 7.8, 0, {"1": "RESET", "2": "GND"})
     # right (pins 1-11): UVCC decoupling, UCAP, USB series resistors
     part(C, "C9", "100nF", 6.8, -4.0, 0, {"1": "+5V", "2": "GND"})
     # below-right corner, so pins 5-11 keep a clear escape path to the right
@@ -455,62 +558,309 @@ def _centroid(points):
     return sum(p[0] for p in points) / len(points), sum(p[1] for p in points) / len(points)
 
 
-def place_mounting_holes(bb, n_per_gap=(3, 0, 0, 3)):
-    """M2 holes on the horizontal gaps between key rows, where switch housings leave a
-    5 mm band free on top. Position along the gap is picked automatically to clear all
-    pads, holes and bottom-side parts (sockets, diodes, MCU)."""
-    obstacles = []
-    for fp in bb.board.GetFootprints():
-        for p in fp.Pads():
-            x, y = to_mm(p.GetPosition())
-            r = max(pcbnew.ToMM(p.GetSize().x), pcbnew.ToMM(p.GetSize().y),
-                    pcbnew.ToMM(p.GetDrillSize().x)) / 2
-            obstacles.append((x, y, r))
-        if fp.IsFlipped():  # bottom-side part bodies (incl. hotswap sockets)
-            bbox = fp.GetCourtyard(pcbnew.B_CrtYd).BBox()
-            if bbox.GetWidth() > 0:
-                x0, y0 = to_mm(bbox.GetOrigin())
-                obstacles.append(("box", x0, y0, x0 + pcbnew.ToMM(bbox.GetWidth()),
-                                  y0 + pcbnew.ToMM(bbox.GetHeight())))
-    for t in bb.board.GetTracks():  # pre-routed stubs and vias
-        x, y = to_mm(t.GetPosition() if t.GetClass() == "PCB_VIA" else t.GetStart())
-        obstacles.append((x, y, 0.5))
+def place_mounting_holes(bb):
+    """M2 holes at the Tada68 positions (non-plated: hotswap sockets come close to some)."""
+    for i, (x, y) in enumerate(MOUNT_HOLES, start=1):
+        bb.footprint("MountingHole_2.2mm_M2", f"H{i}", "M2", x, y)
+    return MOUNT_HOLES
 
-    hole_r, margin, box_margin = 2.2, 0.6, 0.25
-    # Hotswap sockets start 2.2 mm below each row gap, so nudge holes up a little;
-    # the switch housings above still leave >2 mm for an M2 screw head.
-    y_shift = -0.45 if SWITCH == "hotswap" else 0.0
 
-    def clear(x, y):
-        for o in obstacles:
-            if o[0] == "box":
-                _, x0, y0, x1, y1 = o
-                dx = max(x0 - x, 0, x - x1)
-                dy = max(y0 - y, 0, y - y1)
-                if math.hypot(dx, dy) < hole_r + box_margin:
-                    return False
-            elif math.hypot(o[0] - x, o[1] - y) < o[2] + hole_r + margin:
-                return False
-        return True
+USB_PAIR_PITCH = 0.4   # D+/D- centre to centre: 0.25 mm tracks with a 0.15 mm gap
+PAIR_GRID = 0.25       # search grid for the pair's centre line (mm)
 
-    placed = []
-    for gap, count in enumerate(n_per_gap, start=1):
-        if not count:
+
+class _CopperMap:
+    """Copper and holes of the board as simple shapes, for clearance tests and for
+    rasterising a search grid. Shapes: ("circle", x, y, r), ("rect", x0, y0, x1, y1),
+    ("seg", x0, y0, x1, y1, half_width); each with the layers it blocks and its clearance."""
+
+    def __init__(self, board, edge_margin):
+        self.items = []  # (shape, on_front, on_back, clearance, net)
+        for fp in board.GetFootprints():
+            for p in fp.Pads():
+                x, y = to_mm(p.GetPosition())
+                if p.GetAttribute() == pcbnew.PAD_ATTRIB_NPTH:
+                    self.items.append((("circle", x, y, pcbnew.ToMM(p.GetDrillSize().x) / 2), True, True, 0.3, ""))
+                    continue
+                front, back = p.IsOnLayer(pcbnew.F_Cu), p.IsOnLayer(pcbnew.B_Cu)
+                if p.GetShape() == pcbnew.PAD_SHAPE_CIRCLE:
+                    shape = ("circle", x, y, pcbnew.ToMM(p.GetSize().x) / 2)
+                else:
+                    bb = p.GetBoundingBox()
+                    (x0, y0), w, h = to_mm(bb.GetOrigin()), pcbnew.ToMM(bb.GetWidth()), pcbnew.ToMM(bb.GetHeight())
+                    shape = ("rect", x0, y0, x0 + w, y0 + h)
+                self.items.append((shape, front, back, 0.2, p.GetNetname()))
+        for t in board.GetTracks():
+            if t.GetClass() == "PCB_VIA":
+                x, y = to_mm(t.GetPosition())
+                self.items.append((("circle", x, y, pcbnew.ToMM(t.GetWidth(pcbnew.F_Cu)) / 2), True, True, 0.2,
+                                   t.GetNetname()))
+            else:
+                (x0, y0), (x1, y1) = to_mm(t.GetStart()), to_mm(t.GetEnd())
+                on_f = t.GetLayer() == pcbnew.F_Cu
+                self.items.append((("seg", x0, y0, x1, y1, pcbnew.ToMM(t.GetWidth()) / 2), on_f, not on_f, 0.2,
+                                   t.GetNetname()))
+        self.edges = outline_chords(OUTLINE)
+        self.edge_margin = edge_margin
+
+    @staticmethod
+    def distance(shape, x, y):
+        kind = shape[0]
+        if kind == "circle":
+            return math.hypot(x - shape[1], y - shape[2]) - shape[3]
+        if kind == "rect":
+            return rect_distance(x, y, shape[1:])
+        _, x0, y0, x1, y1, hw = shape
+        dx, dy = x1 - x0, y1 - y0
+        L2 = dx * dx + dy * dy
+        t = 0 if L2 == 0 else max(0, min(1, ((x - x0) * dx + (y - y0) * dy) / L2))
+        return math.hypot(x - x0 - t * dx, y - y0 - t * dy) - hw
+
+    def clear(self, x, y, r, front=True, back=True, net=None):
+        """True if a disc of radius r at (x, y) keeps clearance on the given layers
+        (copper of `net` itself doesn't count)."""
+        if any(self.distance(("seg", *a, *b, 0), x, y) < r + self.edge_margin for a, b in self.edges):
+            return False
+        return all(self.distance(s, x, y) >= r + c for s, f, b, c, n in self.items
+                   if ((front and f) or (back and b)) and not (net and n == net))
+
+    def segment_clear(self, a, b, r, front=True, back=True, net=None):
+        n = max(1, int(math.dist(a, b) / 0.1))
+        return all(self.clear(a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n, r, front, back, net)
+                   for k in range(n + 1))
+
+
+class _SearchGrid:
+    """The top layer rasterised for a grid search: a cell is blocked if a track centred on
+    it, `half` wide to each side, would come too close to copper, a hole or the edge."""
+
+    def __init__(self, cmap, half, origin, step=PAIR_GRID):
+        bx0, by0, bx1, by1 = outline_bbox(OUTLINE)
+        self.step = step
+        self.x0 = origin[0] - math.floor((origin[0] - bx0) / step) * step
+        self.y0 = origin[1] - math.floor((origin[1] - by0) / step) * step
+        self.nx, self.ny = int((bx1 - self.x0) / step) + 1, int((by1 - self.y0) / step) + 1
+        nx, ny = self.nx, self.ny
+        self.blocked = blocked = bytearray(nx * ny)
+        shapes = [(s, c) for s, f, _, c, _ in cmap.items if f] + \
+                 [(("seg", *a, *b, 0), cmap.edge_margin) for a, b in cmap.edges]
+        for shape, c in shapes:
+            reach = half + c
+            if shape[0] == "circle":
+                sx0, sy0, sx1, sy1 = shape[1] - shape[3], shape[2] - shape[3], shape[1] + shape[3], shape[2] + shape[3]
+            elif shape[0] == "rect":
+                sx0, sy0, sx1, sy1 = shape[1:]
+            else:
+                sx0, sy0 = min(shape[1], shape[3]) - shape[5], min(shape[2], shape[4]) - shape[5]
+                sx1, sy1 = max(shape[1], shape[3]) + shape[5], max(shape[2], shape[4]) + shape[5]
+            for j in range(max(0, int((sy0 - reach - self.y0) / step)), min(ny, int((sy1 + reach - self.y0) / step) + 2)):
+                for i in range(max(0, int((sx0 - reach - self.x0) / step)), min(nx, int((sx1 + reach - self.x0) / step) + 2)):
+                    if not blocked[j * nx + i] and _CopperMap.distance(shape, *self.pt(i, j)) < reach:
+                        blocked[j * nx + i] = 1
+        # outside the outline (the notches and the USB tab) -- scanline fill
+        for j in range(ny):
+            y = self.y0 + j * step
+            xs = sorted(a[0] + (y - a[1]) * (b[0] - a[0]) / (b[1] - a[1])
+                        for a, b in cmap.edges if (a[1] <= y < b[1]) or (b[1] <= y < a[1]))
+            for i in range(nx):
+                if sum(1 for e in xs if e < self.x0 + i * step) % 2 == 0:
+                    blocked[j * nx + i] = 1
+
+    def pt(self, i, j):
+        return (self.x0 + i * self.step, self.y0 + j * self.step)
+
+    def cell(self, x, y):
+        return round((x - self.x0) / self.step), round((y - self.y0) / self.step)
+
+    def free(self, i, j):
+        return 0 <= i < self.nx and 0 <= j < self.ny and not self.blocked[j * self.nx + i]
+
+    def corners(self, cells):
+        """Grid path -> corner points in mm."""
+        pts = [self.pt(*cells[0])]
+        for a, b, c in zip(cells, cells[1:], cells[2:]):
+            if (b[0] - a[0], b[1] - a[1]) != (c[0] - b[0], c[1] - b[1]):
+                pts.append(self.pt(*b))
+        pts.append(self.pt(*cells[-1]))
+        return pts
+
+
+def _astar(blocked, nx, ny, start, goal, start_dir=None):
+    """8-connected grid search with a turn penalty (keeps the pair to few, long segments)."""
+    import heapq
+    dirs = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)]
+    step = [1.0, math.sqrt(2)] * 4
+    gx, gy = goal
+
+    def h(x, y):
+        dx, dy = abs(x - gx), abs(y - gy)
+        return max(dx, dy) + (math.sqrt(2) - 1) * min(dx, dy)
+
+    starts = range(8) if start_dir is None else [start_dir]
+    best = {(start, d): 0.0 for d in starts}
+    prev = {}
+    heap = [(h(*start), 0.0, start, d) for d in starts]
+    while heap:
+        _, g, (x, y), d = heapq.heappop(heap)
+        if (x, y) == goal:
+            path = [(x, y)]
+            key = ((x, y), d)
+            while key in prev:
+                key = prev[key]
+                path.append(key[0])
+            return path[::-1]
+        if g > best.get(((x, y), d), float("inf")):
             continue
-        y = TOP_MARGIN + gap * 19.05 + y_shift
-        for t in [(i + 0.5) / count for i in range(count)]:
-            target = t * BOARD_W
-            cands = [x / 4 for x in range(int(8 * 4), int((BOARD_W - 8) * 4))]
-            cands.sort(key=lambda x: abs(x - target))
-            x = next((c for c in cands if clear(c, y) and all(math.hypot(c - px, y - py) > 30 for px, py in placed)), None)
-            if x is None:
-                print(f"warning: no room for a mounting hole near ({target:.0f}, {y:.1f})")
+        for nd, (dx, dy) in enumerate(dirs):
+            turn = min((nd - d) % 8, (d - nd) % 8)
+            if turn > 2:
+                continue  # no turns sharper than 90 degrees
+            x2, y2 = x + dx, y + dy
+            if not (0 <= x2 < nx and 0 <= y2 < ny) or blocked[y2 * nx + x2]:
                 continue
-            placed.append((x, y))
-            obstacles.append((x, y, hole_r))
-    for i, (x, y) in enumerate(placed, start=1):
-        bb.footprint("MountingHole_2.2mm_M2_Pad", f"H{i}", "M2", x, y)
-    return placed
+            g2 = g + step[nd] + 2.0 * turn
+            k2 = ((x2, y2), nd)
+            if g2 < best.get(k2, float("inf")):
+                best[k2] = g2
+                prev[k2] = ((x, y), d)
+                heapq.heappush(heap, (g2 + h(x2, y2), g2, (x2, y2), nd))
+    return None
+
+
+def _offset(points, o):
+    """Polyline offset by o to the left of travel (mitred joints)."""
+    norms = []
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        L = math.hypot(x1 - x0, y1 - y0)
+        norms.append(((y1 - y0) / L, -(x1 - x0) / L))
+    out = [(points[0][0] + o * norms[0][0], points[0][1] + o * norms[0][1])]
+    for i in range(1, len(points) - 1):
+        (ax, ay), (bx, by) = norms[i - 1], norms[i]
+        k = o / (1 + ax * bx + ay * by)
+        out.append((points[i][0] + k * (ax + bx), points[i][1] + k * (ay + by)))
+    out.append((points[-1][0] + o * norms[-1][0], points[-1][1] + o * norms[-1][1]))
+    return out
+
+
+def route_usb_pair(bb):
+    """Pre-route the long D+/D- run between the 22R resistors (next to U1, under the
+    spacebar) and the USB-C corner as a locked parallel pair on the top layer, which only
+    has drill holes on it. Stubs and two vias at both ends (the resistors, and the ESD chip
+    U2 next to the receptacle), a grid search for the centre line in between, and the two
+    tracks offset from it. Freerouting then only has the few mm from U2 to J1 left."""
+    board = bb.board
+    width, clearance, via_d, via_drill = NETCLASSES["USB"]
+    half = USB_PAIR_PITCH / 2 + width / 2 + 0.05     # centre line to outer track edge, + margin
+    edge_margin = MIN_RULES["min_copper_edge_clearance"] + 0.35 + 0.05  # + edge keep-out strip
+    cmap = _CopperMap(board, edge_margin)
+
+    # resistor end: pad 2 (connector side) of R3 (D-) and R4 (D+), stubs to two vias above
+    (dnx, dny), (dpx, dpy) = (to_mm(board.FindFootprintByReference(r).FindPadByNumber("2").GetPosition())
+                              for r in ("R3", "R4"))
+    if not dny < dpy:
+        sys.exit("route_usb_pair: expected R3 above R4")
+    vx, vy = round((max(dnx, dpx) + 1.2) / PAIR_GRID) * PAIR_GRID, round((dny - 2.0) / PAIR_GRID) * PAIR_GRID
+    start_vias = {"USB_DN": (vx, vy), "USB_DP": (vx + 1.0, vy)}
+    bb.track(dnx, dny, vx, dny, pcbnew.B_Cu, width, "USB_DN", locked=True)
+    bb.track(vx, dny, vx, vy, pcbnew.B_Cu, width, "USB_DN", locked=True)
+    bb.track(dpx, dpy, vx + 1.0, dpy, pcbnew.B_Cu, width, "USB_DP", locked=True)
+    bb.track(vx + 1.0, dpy, vx + 1.0, vy, pcbnew.B_Cu, width, "USB_DP", locked=True)
+    start = (vx + 0.5, vy - 1.0)
+
+    grid = _SearchGrid(cmap, half, start)   # aligned so the start lies on a grid point
+    nx, ny, blocked, gpt = grid.nx, grid.ny, grid.blocked, grid.pt
+
+    # connector end: straight in from the right to two vias beside U2's I/O1 (D+, pin 1)
+    # and I/O2 (D-, pin 3), then short bottom-layer stubs into the pins
+    u2 = board.FindFootprintByReference("U2")
+    p1, p3 = (to_mm(u2.FindPadByNumber(n).GetPosition()) for n in ("1", "3"))
+    if abs(p1[0] - p3[0]) > 0.01 or not p1[1] < p3[1] or p1[0] < to_mm(u2.GetPosition())[0]:
+        sys.exit("route_usb_pair: expected U2 pins 1 (top) and 3 (bottom) on its right side")
+    end_vias = {"USB_DP": (p1[0] + 1.7, p1[1]), "USB_DN": (p3[0] + 1.7, p3[1])}
+    for net, (px, py) in (("USB_DP", p1), ("USB_DN", p3)):
+        bb.track(px, py, *end_vias[net], pcbnew.B_Cu, width, net, locked=True)
+    ei, ej = grid.cell(p1[0] + 2.7, (p1[1] + p3[1]) / 2)
+    lead_in = [(ei + 5 - k, ej) for k in range(6)]   # arriving heading -x
+    if any(not grid.free(i, j) for i, j in lead_in):
+        sys.exit("route_usb_pair: no room for the pair to come into U2 from the right")
+    si, sj = grid.cell(*start)
+    # 1 mm straight up first, so the fan-in from the two vias stays clear of the pair
+    lead = [(si, sj - k) for k in range(5)]
+    if any(not grid.free(i, j) for i, j in lead):
+        sys.exit("route_usb_pair: no room above the resistor vias")
+    cells = _astar(blocked, nx, ny, lead[-1], lead_in[0], 6)
+    if cells is None:
+        sys.exit("route_usb_pair: no path for the USB pair")
+    pts = grid.corners(lead[:-1] + cells + lead_in[1:])
+    length = 0.0
+    for net, o in (("USB_DN", USB_PAIR_PITCH / 2), ("USB_DP", -USB_PAIR_PITCH / 2)):
+        line = [start_vias[net]] + _offset(pts, o) + [end_vias[net]]
+        for (ax, ay), (bx, by) in zip(line, line[1:]):
+            bb.track(ax, ay, bx, by, pcbnew.F_Cu, width, net, locked=True)
+            length += math.hypot(bx - ax, by - ay) / 2
+        for v in (start_vias[net], end_vias[net]):
+            bb.via(*v, net, size=via_d, drill=via_drill, locked=True)
+    print(f"USB pair pre-routed on F.Cu: {len(pts) - 1} segments, {length:.0f} mm")
+
+
+FEED_WIDTH = 0.3
+
+
+def _via_near(cmap, grid, x, y, net, via_d, stub_w, max_r=5.0):
+    """Nearest grid point to (x, y) where a via of `net` fits, reachable from (x, y) by a
+    straight bottom-layer stub."""
+    ci, cj = grid.cell(x, y)
+    n = int(max_r / grid.step)
+    for i, j in sorted(((i, j) for i in range(ci - n, ci + n + 1) for j in range(cj - n, cj + n + 1)),
+                       key=lambda ij: math.dist(grid.pt(*ij), (x, y))):
+        v = grid.pt(i, j)
+        if math.dist(v, (x, y)) < 0.9 or not grid.free(i, j):
+            continue  # not in the pad itself
+        if cmap.clear(*v, via_d / 2, net=net) and \
+           cmap.segment_clear((x, y), v, stub_w / 2, front=False, net=net):
+            return (i, j), v
+    return None, None
+
+
+def route_power_feed(bb):
+    """Pre-route the +5V feed from the fuse (next to the USB-C receptacle) to U1's
+    decoupling as one locked top-layer track: Freerouting doesn't find a way for a run this
+    long through the switch matrix. Bottom-layer stubs and a via at each end."""
+    board = bb.board
+    _, clearance, via_d, via_drill = NETCLASSES["Power"]
+    cmap = _CopperMap(board, MIN_RULES["min_copper_edge_clearance"] + 0.35 + 0.05)
+    src = to_mm(next(p for p in board.FindFootprintByReference("F1").Pads() if p.GetNetname() == "+5V").GetPosition())
+    # into U1's +5V decoupling at the capacitor nearest the fuse, staying off the top layer
+    # over U1 (its fan-out needs vias there) and out of the J1-U2 corner (D+/D- go there)
+    caps = [p for fp in board.GetFootprints() if re.fullmatch(r"C\d+", fp.GetReference())
+            for p in fp.Pads() if p.GetNetname() == "+5V"]
+    dst = min((to_mm(p.GetPosition()) for p in caps), key=lambda q: math.dist(q, src))
+    ux, uy = to_mm(board.FindFootprintByReference("U1").GetPosition())
+    jx, _ = to_mm(board.FindFootprintByReference("J1").GetPosition())
+    u2x, _ = to_mm(board.FindFootprintByReference("U2").GetPosition())
+    keepouts = [(ux - 5.5, uy - 5.5, ux + 5.5, uy + 5.5), (jx - 5.5, -1.0, u2x + 6.0, 9.0)]
+    grid = _SearchGrid(cmap, FEED_WIDTH / 2 + 0.05, src)
+    for kx0, ky0, kx1, ky1 in keepouts:
+        for j in range(grid.ny):
+            for i in range(grid.nx):
+                x, y = grid.pt(i, j)
+                if kx0 <= x <= kx1 and ky0 <= y <= ky1:
+                    grid.blocked[j * grid.nx + i] = 1
+    (si, sj), sv = _via_near(cmap, grid, *src, "+5V", via_d, FEED_WIDTH)
+    (gi, gj), gv = _via_near(cmap, grid, *dst, "+5V", via_d, FEED_WIDTH)
+    if sv is None or gv is None:
+        sys.exit("route_power_feed: no room for a via next to F1 or the target capacitor")
+    cells = _astar(grid.blocked, grid.nx, grid.ny, (si, sj), (gi, gj))
+    if cells is None:
+        sys.exit("route_power_feed: no path for the +5V feed")
+    line = [src] + grid.corners(cells) + [dst]
+    for (ax, ay), (bx, by) in zip(line, line[1:]):
+        layer = pcbnew.B_Cu if (ax, ay) in (src, dst) or (bx, by) in (src, dst) else pcbnew.F_Cu
+        bb.track(ax, ay, bx, by, layer, FEED_WIDTH, "+5V", locked=True)
+    for v in (sv, gv):
+        bb.via(*v, "+5V", size=via_d, drill=via_drill, locked=True)
+    length = sum(math.dist(a, b) for a, b in zip(line, line[1:]))
+    print(f"+5V feed pre-routed on F.Cu: {len(line) - 1} segments, {length:.0f} mm")
 
 
 # --- autorouting -------------------------------------------------------------
@@ -793,8 +1143,8 @@ def main():
 
     bb = BoardBuilder()
     bb.net("GND")  # make sure the common nets exist before netclass assignment
-    bb.outline(BOARD_W, PCB_H)
-    bb.edge_keepout(BOARD_W, PCB_H)
+    bb.outline(OUTLINE)
+    bb.edge_keepout(OUTLINE)
     place_matrix(bb)
     place_usb(bb)
     u1 = place_mcu(bb)
@@ -802,7 +1152,9 @@ def main():
     holes = place_mounting_holes(bb)
     setup_rules(bb.board)
 
-    bb.text(f"custom-kbr 65% ({SWITCH})", 30, 3.5, pcbnew.B_SilkS, mirror=True)
+    route_usb_pair(bb)
+    route_power_feed(bb)
+    bb.text(f"custom-kbr 65% ({SWITCH})", 158, 91.5, pcbnew.B_SilkS, mirror=True)
 
     with open(os.path.join(BUILD, "pinmap.json"), "w") as f:
         json.dump({"rows": [pinmap[f"ROW{r}"] for r in range(N_ROWS)],
@@ -827,8 +1179,8 @@ def add_gnd_pours(path):
     bb = BoardBuilder()
     bb.board = board
     bb.nets = {"GND": board.FindNet("GND")}
-    bb.zone("GND", pcbnew.F_Cu, BOARD_W, PCB_H)
-    bb.zone("GND", pcbnew.B_Cu, BOARD_W, PCB_H)
+    bb.zone("GND", pcbnew.F_Cu, outline_bbox(OUTLINE))
+    bb.zone("GND", pcbnew.B_Cu, outline_bbox(OUTLINE))
     board.BuildConnectivity()
     pcbnew.ZONE_FILLER(board).Fill(board.Zones())
     save_board(board, path)

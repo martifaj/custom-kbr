@@ -23,8 +23,13 @@ SOCKET_HOLE = 3.0
 SOCKET_PADS = {"1": (5.842, -5.08), "2": (-7.085, -2.54)}  # pad 1 = pin at (2.54, -5.08)
 SOCKET_PAD_SIZE = (2.55, 2.5)
 SOCKET_BODY = (-8.6, -7.3, 7.4, -0.3)            # courtyard: x0, y0, x1, y1
+SOCKET_OUTLINE = (-5.95, -6.95, 4.75, -0.6)      # plastic body (fab/silk outline)
 # PCB-mount (Cherry) stabilizer: x offset per key width; holes at y=-7.0 (3.05) and y=+8.24 (4.0)
 STAB_X = {2: 11.9, 2.25: 11.9, 2.75: 11.9, 6.25: 50.0, 7: 57.15}
+# Widths that also get a variant with the stabilizer upside down (holes mirrored in Y). On a
+# standard-outline 65% board the bottom row is too close to the edge for the 4 mm hole, so
+# the spacebar stabilizer is mounted with its wire towards the back.
+FLIP_STAB_WIDTHS = [6.25]
 
 
 def _m(x):  # mirror x (front-side definition of a bottom-side part)
@@ -41,8 +46,8 @@ def rect(layer, x0, y0, x1, y1, width):
             f' (stroke (width {width}) (type solid)) (fill none) (layer "{layer}"))\n')
 
 
-def footprint(w):
-    name = f"SW_MX_Hotswap_{w:.2f}u"
+def footprint(w, flip_stab=False):
+    name = f"SW_MX_Hotswap_{w:.2f}u" + ("_FlippedStab" if flip_stab else "")
     half = w * 19.05 / 2
     s = [f'(footprint "{name}"\n\t(version 20240108)\n\t(generator "custom-kbr")\n\t(layer "F.Cu")\n',
          f'\t(descr "Cherry MX compatible switch, Kailh CPG151101S11 hotswap socket, {w}u keycap")\n',
@@ -59,16 +64,17 @@ def footprint(w):
         s.append(npth(x, y, SOCKET_HOLE))
     if w in STAB_X:
         for sx in (-STAB_X[w], STAB_X[w]):
-            s.append(npth(sx, -7.0, 3.05))
-            s.append(npth(sx, 8.24, 4.0))
+            sy = -1 if flip_stab else 1
+            s.append(npth(sx, -7.0 * sy, 3.05))
+            s.append(npth(sx, 8.24 * sy, 4.0))
     # socket pads
     for num, (x, y) in SOCKET_PADS.items():
         s.append(f'\t(pad "{num}" smd rect (at {_m(x):.4f} {y:.4f}) (size {SOCKET_PAD_SIZE[0]} {SOCKET_PAD_SIZE[1]})'
                  ' (layers "F.Cu" "F.Paste" "F.Mask"))\n')
     # socket body: courtyard + fab + silk
     s.append(rect("F.CrtYd", *SOCKET_BODY, 0.05))
-    s.append(rect("F.Fab", -5.95, -6.95, 4.75, -0.6, 0.1))
-    s.append(rect("F.SilkS", -5.95, -6.95, 4.75, -0.6, 0.12))
+    s.append(rect("F.Fab", *SOCKET_OUTLINE, 0.1))
+    s.append(rect("F.SilkS", *SOCKET_OUTLINE, 0.12))
     # keycap outline and switch housing for reference
     s.append(rect("Dwgs.User", -half, -9.525, half, 9.525, 0.1))
     s.append(rect("Dwgs.User", -7, -7, 7, 7, 0.1))
@@ -78,8 +84,8 @@ def footprint(w):
 
 def main():
     os.makedirs(LIB, exist_ok=True)
-    for w in WIDTHS:
-        name, text = footprint(w)
+    for w, flip in [(w, False) for w in WIDTHS] + [(w, True) for w in FLIP_STAB_WIDTHS]:
+        name, text = footprint(w, flip)
         with open(os.path.join(LIB, name + ".kicad_mod"), "w") as f:
             f.write(text)
         print("wrote", name)

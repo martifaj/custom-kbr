@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Write case/kbr_data.scad: the board geometry the OpenSCAD case is built around.
 
-Key positions come from layout.py; the outline, mounting holes, USB-C receptacle and
-reset button are read from the routed board (build/custom-kbr.kicad_pcb), so the case
-follows the PCB if hole positions or parts move. Plain text parsing, no pcbnew needed.
+Everything is read from the routed board (build/custom-kbr.kicad_pcb): outline, mounting
+holes, USB-C receptacle, reset button and the switch footprints (key widths from
+layout.py), so the case follows the PCB if anything moves. Plain text parsing, no pcbnew.
 
 OpenSCAD coordinates: origin at the front-left corner of the PCB, X right, Y towards
 the back (KiCad Y is flipped), Z up. The USB-C connector is on the back edge.
@@ -22,7 +22,8 @@ OUT = os.path.join(ROOT, "case", "kbr_data.scad")
 
 
 def footprints(text):
-    """Yield (name, reference, x, y) for every footprint on the board."""
+    """Yield (name, reference, x, y) for every footprint on the board (x, y = origin;
+    the switch centre for the hotswap footprints)."""
     for chunk in re.split(r"\n\t\(footprint ", text)[1:]:
         name = chunk.split('"')[1].split(":")[-1]
         at = re.search(r"\(at ([-\d.]+) ([-\d.]+)", chunk)
@@ -50,25 +51,28 @@ def main():
     text = open(PCB).read()
     (bx0, by0, bx1, by1), radius = outline(text)
     w, h = bx1 - bx0, by1 - by0
-    top_margin = h - 5 * U  # strip above the top key row (USB-C)
 
     def xy(x, y):  # KiCad -> OpenSCAD
         return round(x - bx0, 4), round(by1 - y, 4)
 
-    holes, usb, reset = [], None, None
+    holes, usb, reset, switches = [], None, None, {}
     for name, ref, x, y in footprints(text):
-        if name.startswith("MountingHole"):
+        if name.startswith("SW_MX_Hotswap"):
+            switches[int(ref[2:])] = (x, y, "_FlippedStab" in name)
+        elif name.startswith("MountingHole"):
             holes.append(xy(x, y))
         elif ref == "J1":
-            usb = xy(x, y)
+            usb = xy(x, y - 3.65)  # receptacle mouth: 3.65 mm from the footprint origin
         elif ref == "SW0":
             reset = xy(x, y)
     holes.sort()
 
+    if len(switches) != len(KEYS):
+        sys.exit(f"expected {len(KEYS)} hotswap switch footprints, found {len(switches)}")
     keys = []
-    for k in KEYS:
-        cx, cy = k.center_mm
-        keys.append((*xy(cx + bx0, cy + top_margin + by0), k.w, k.row, STAB_X.get(k.w, 0)))
+    for i, k in enumerate(KEYS, start=1):  # SW<i> is KEYS[i - 1]
+        x, y, flipped = switches[i]
+        keys.append((*xy(x, y), k.w, k.row, STAB_X.get(k.w, 0), -1 if flipped else 1))
 
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     with open(OUT, "w") as f:
@@ -78,11 +82,13 @@ def main():
         f.write(f"PCB_W = {w:.4f};\nPCB_H = {h:.4f};\nPCB_R = {radius:.4f};\nKEY_U = {U};\n\n")
         f.write("// M2 mounting holes [x, y]\nPCB_HOLES = [\n")
         f.write(",\n".join(f"    [{x}, {y}]" for x, y in holes) + "\n];\n\n")
-        f.write(f"// USB-C receptacle (HRO TYPE-C-31-M-12, bottom side), mouth flush with the back edge\n"
-                f"USB_X = {usb[0]};\n\n")
+        f.write(f"// USB-C receptacle (HRO TYPE-C-31-M-12, bottom side): centre x and the y of its mouth\n"
+                f"// (it sticks out past the back edge of the PCB)\nUSB_X = {usb[0]};\nUSB_MOUTH_Y = {usb[1]};\n\n")
         f.write(f"// Reset button (SKQG, bottom side) [x, y]\nRESET_POS = [{reset[0]}, {reset[1]}];\n\n")
-        f.write("// Keys [cx, cy, width_u, row, stabilizer_x_offset (0 = none)]\nKEYS = [\n")
-        f.write(",\n".join(f"    [{cx}, {cy}, {kw}, {row}, {stab}]" for cx, cy, kw, row, stab in keys) + "\n];\n")
+        f.write("// Keys [cx, cy, width_u, row, stabilizer_x_offset (0 = none), stabilizer_dir"
+                " (1 = wire at the front, -1 = upside down)]\nKEYS = [\n")
+        f.write(",\n".join(f"    [{cx}, {cy}, {kw}, {row}, {stab}, {sd}]" for cx, cy, kw, row, stab, sd in keys)
+                + "\n];\n")
     print(f"wrote {os.path.relpath(OUT, ROOT)}: {w:.2f} x {h:.2f} mm, {len(holes)} holes, {len(keys)} keys,"
           f" USB at x={usb[0]}, reset at {reset}")
 

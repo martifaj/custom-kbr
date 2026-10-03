@@ -180,7 +180,7 @@ module plate2d() {
         for (k = KEYS) {
             translate([k[0], k[1]]) square(switch_cut, center = true);
             if (k[4] > 0) for (s = [-1, 1])
-                translate([k[0] + s * k[4], k[1] + stab_cut_dy]) square([stab_cut_w, stab_cut_h], center = true);
+                translate([k[0] + s * k[4], k[1] + stab_cut_dy * k[5]]) square([stab_cut_w, stab_cut_h], center = true);
         }
     }
 }
@@ -217,7 +217,7 @@ module pcb_mock() {
         for (h = PCB_HOLES) translate(h) circle(d = 2.2);
     }
     // USB-C receptacle
-    color("silver") translate([USB_X - 4.47, PCB_H - 7.3, standoff_h - usb_body_h]) cube([8.94, 7.3, usb_body_h]);
+    color("silver") translate([USB_X - 4.47, USB_MOUTH_Y - 7.3, standoff_h - usb_body_h]) cube([8.94, 7.3, usb_body_h]);
 }
 
 module switches() {   // MX top housings above the plate
