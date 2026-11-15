@@ -1,9 +1,12 @@
 # custom-kbr — scripted 60% keyboard PCB
 
 A 61-key 60% ANSI hotswap keyboard PCB generated entirely with the KiCad 9 `pcbnew` Python API,
-autorouted with Freerouting, plus a matching QMK keyboard definition. The outline, screw holes and
-USB-C position follow the GH60 standard, so it should fit standard 60% cases (see "Before ordering").
+autorouted with Freerouting, plus QMK and standalone AVR firmware definitions. The outline, 6-point mounting pattern
+and USB-C position follow the GH60 standard, and have been fabricated and verified in a standard 60% case.
 Earlier designs are tagged in git: `v1-tada68-65` (68-key 65%, Tada68 form factor) and `v0-tall-board`.
+
+![Bottom PCB render](docs/render-bottom.png)
+![Top PCB render](docs/render-top.png)
 
 ## Design
 
@@ -11,16 +14,16 @@ Earlier designs are tagged in git: `v1-tada68-65` (68-key 65%, Tada68 form facto
 |---|---|
 | Layout | Standard 60% ANSI, 61 keys (2u Backspace, 2.25u Enter / LShift, 2.75u RShift, 6.25u Space, eight 1.25u mods) |
 | Board | GH60 form factor: 285 × 94.6 mm with a small USB tab and the GH60 side slots, 2 layers, 1.6 mm, GND pour both sides |
-| Switches | Cherry MX compatible, **Kailh hotswap sockets** (CPG151101S11) on the bottom, 3- or 5-pin switches, PCB-mount stabilizers on 2u+ keys; the spacebar stabilizer mounts upside down (wire towards the back), as on other GH60 hotswap boards. `--switch solder` builds a soldered variant (not checked against the new outline) |
+| Switches | Cherry MX compatible, **Kailh hotswap sockets** (CPG151101S11) on the bottom, 3- or 5-pin switches, PCB-mount stabilizers on 2u+ keys; the spacebar stabilizer mounts upside down (wire towards the back), as on other GH60 hotswap boards. `--switch solder` builds a soldered variant |
 | Matrix | 5 × 14, COL2ROW, one 1N4148W (SOD-123) per key on the bottom side |
 | MCU | ATmega32U4-MU (QFN-44), 16 MHz crystal, DFU bootloader (reset button enters it via HWB pull-down) |
 | USB | USB-C (HRO TYPE-C-31-M-12) at the GH60 position between Esc and 1, 5.1k CC pull-downs (USB 2.0 device), USBLC6-2SC6 ESD, 500 mA PTC, 22 Ω series resistors |
-| Mounting | 4 × M2 non-plated holes at the GH60 positions (plus the two side slots in the outline) |
+| Mounting | 4 × M2 non-plated holes at the GH60 positions plus the 2 GH60 side slots (with copper keep-out zones for screw heads and standoffs) |
 
 All SMD parts, including the sockets, are on the bottom side. The top is switches only, so a plate fits.
-Hotswap sockets cover the upper half of every key on the bottom, so a few switches are turned 180°
+Hotswap sockets cover the upper half of every key on the bottom, so three switches are turned 180°
 (their socket moves to the lower half; keycaps don't care): Esc and 1, to make room for the USB-C
-receptacle, fuse, ESD and CC resistors, and any key whose socket would sit on a case standoff (H).
+receptacle, fuse, ESD and CC resistors, and H, whose socket would otherwise sit on the center case standoff.
 ai03's JP60 turns the same three keys.
 The script finds those automatically and stops if a hole can't be cleared that way.
 Parts that are fixed by design (MCU, USB, crystal) are placed in `scripts/generate_pcb.py`;
@@ -30,13 +33,14 @@ and the result is written to `build/pinmap.json` and fed into the QMK config.
 ## Files
 
 - `scripts/layout.py` — key layout, matrix and MCU pinout (single source of truth)
-- `scripts/gen_footprints.py` — writes the Kailh MX hotswap footprints (1u–6.25u, with stabilizer holes, plus a 6.25u variant with the stabilizer upside down) into `lib/kbr.pretty`
+- `scripts/gen_footprints.py` — writes the Kailh MX hotswap footprints (1u–6.25u, with stabilizer holes and keep-out zones, plus a 6.25u variant with the stabilizer upside down) into `lib/kbr.pretty`
 - `scripts/generate_pcb.py` — builds the board: placement, nets, design rules, autoroute, GND pours.
   Outline, holes and USB-C position from ai03's hotswap [JP60](https://github.com/ai03-2725/JP60) (MIT),
   cross-checked against the original [GH60](https://github.com/komar007/gh60)
-- `scripts/fab.sh` — DRC, gerbers + drill (zip), bottom pick-and-place, BOM, renders
+- `scripts/fab.sh`, `scripts/bom.py` — DRC, gerbers + drill (zip), bottom pick-and-place, BOM with MPNs, renders
 - `scripts/gen_case_data.py`, `scripts/build_case.sh`, `case/case.scad` — 3D-printed case and plate (see below)
 - `scripts/gen_qmk.py` — writes `firmware/qmk/keyboards/custom_kbr/` (keyboard.json + default keymap)
+- `firmware/standalone/main.c`, `scripts/flash.sh` — dependency-free AVR C USB HID firmware (builds directly with `avr-gcc`) and DFU flashing script
 - `lib/kbr.pretty/` — hotswap footprints (generated) + the other footprints, vendored from the official KiCad library (CC-BY-SA 4.0 w/ exception)
 - `tools/freerouting-1.9.0.jar` — autorouter. 2.x hangs on this board (internal error on the +5V net); 1.9.0 routes it in about 3 minutes
 
@@ -60,24 +64,28 @@ an existing board (for example after hand edits): it cleans dangling stubs and r
 
 Routing pipeline:
 1. **Pre-routing** of the parts the autorouter handles badly: every QFN ground pin is tied inward to the
-   exposed pad, which gets 4 vias to the pours; D+/D− run as parallel 0.25 mm tracks to the 22 Ω resistors;
-   UCAP gets a stub and a via. The two long runs between the USB-C corner and the MCU under the spacebar
-   are found by a grid search on the top layer, which only has drill holes on it: the D+/D− pair (two tracks
-   0.4 mm apart, vias at both ends) and the +5V feed from the fuse to the MCU's bulk capacitor, which Freerouting
-   could not fit through the matrix. All of these are locked, so Freerouting keeps them.
+   exposed pad, which gets 4 thermal vias to the pours; every other ground pad gets a local locked via to
+   prevent ground daisy-chaining; `XTAL1`/`XTAL2` are routed symmetrically on `B.Cu`; `D+`/`D−` run flow-through
+   across the `USBLC6-2SC6` ESD array (`VBUS` clamped on pin 5) and out to the 22 Ω resistors; `UCAP` gets a stub
+   and a via. The two long runs between the USB-C corner and the MCU under the spacebar are found by a grid search
+   on the top layer, which only has drill holes on it: the `D+`/`D−` pair (two tracks 0.4 mm apart, vias at both ends)
+   and the `+5V` feed from the fuse to the MCU's bulk capacitor, which Freerouting could not fit through the matrix.
+   All of these are locked, so Freerouting keeps them.
 2. **Freerouting** routes everything else (about 3 minutes on a Raspberry Pi).
-3. **Clean-up:** dangling stubs are deleted. Any connection still open is closed by a small local search
-   (a straight or L-shaped track, or a hop over the other layer through two vias). Each candidate is kept
+3. **Clean-up:** sub-0.01 mm fragments and dangling stubs are deleted. Any connection still open is closed by a small
+   local search (a straight or L-shaped track, or a hop over the other layer through two vias). Each candidate is kept
    only if `kicad-cli` DRC reports no new errors. As a last resort, Freerouting re-runs on the routed board.
 4. **GND pours** on both layers. Netclasses and design rules are written into `build/custom-kbr.kicad_pro`,
-so KiCad's DRC checks the same rules the router used (0.2 mm tracks / 0.15 mm clearance, 0.25 mm power).
+   so KiCad's DRC checks the same rules the router used (0.2 mm tracks / 0.15 mm clearance, 0.25 mm power).
 
-## Case (3D printed, OpenSCAD)
+## Case (Commercial GH60 or 3D-Printed OpenSCAD)
 
-`case/case.scad` is a tray-mount case plus an optional switch plate, built around the real board:
-`scripts/gen_case_data.py` writes `case/kbr_data.scad` (outline, M2 holes, USB-C, reset button and switch
-positions, all read from `build/custom-kbr.kicad_pcb`), so re-run it after changing the board.
-Since the board follows the GH60 standard, a store-bought 60% case and plate are an alternative to printing.
+Because the board follows the standard 6-point GH60 tray-mount pattern and USB-C placement, it drops directly into
+standard commercial 60% GH60 cases and ANSI switch plates (verified on hardware).
+
+An optional 3D-printable tray-mount case and switch plate are also included in `case/case.scad`, generated directly
+from the routed board (`scripts/gen_case_data.py` writes `case/kbr_data.scad` with the outline, all 6 mounting points,
+USB-C, reset button and switch positions):
 
 ```sh
 scripts/build_case.sh                          # -> build/case/{case,plate}_{left,right}.stl
@@ -89,7 +97,7 @@ openscad case/case.scad                        # interactive preview (part = "as
   `screw_mode="selftap"` for screws cut straight into the plastic). The standoffs are 5 mm wide where they touch
   the PCB (2.54 mm of free board around each hole) and flare out below the height of the sockets.
 - **Height:** 4.5 mm under the PCB (sockets 1.8 mm, USB-C receptacle 3.26 mm). The rim is flush with the plate top.
-- **Typing angle** 6° built into the bottom (`typing_angle`, 0 = flat). 6 recesses for 10 mm rubber bumpers.
+- **Typing angle:** 6° built into the bottom (`typing_angle`, 0 = flat). 6 recesses for 10 mm rubber bumpers.
 - **USB-C:** 13 × 7.5 mm opening in the back wall, sized for most cable overmolds. **Reset:** paperclip hole in the floor under the button.
 - **Split:** the case is 293 mm wide, so it prints as two halves (172 and 129 × 105 mm, bottom face on the bed, no supports),
   joined by 4 vertical dovetails in the floor. Glue them; once the PCB is screwed to both halves the whole case is stiff.
@@ -98,29 +106,42 @@ openscad case/case.scad                        # interactive preview (part = "as
   switches from coming out with the keycaps. It is split along key boundaries (190 + 133 mm), so each half is held by its own switches.
   Print in PETG if you can; PLA works.
 
-Assembly: screw the PCB in first, then press the switches through the plate into the sockets.
-Unverified against real parts: the stabilizer cutout (`stab_cut_*`) and the USB opening; print a test piece first if your stabilizers or cable are unusual.
-
 ## Firmware
+
+You can use either **QMK** or the included **standalone AVR C firmware** (which requires only `avr-gcc`, `avr-libc`, and `dfu-programmer`):
+
+### Option A: QMK
 
 ```sh
 cp -r firmware/qmk/keyboards/custom_kbr ~/qmk_firmware/keyboards/
 qmk compile -kb custom_kbr -km default
-qmk flash   -kb custom_kbr -km default   # press the reset button on the back
+qmk flash   -kb custom_kbr -km default   # press the reset button on the back (or Fn+\)
 ```
 
-Fn layer: F1–F12 on the number row, Fn+Esc = `, arrows on IJKL (Home/PgUp/PgDn/End on Y/U/O/P),
+### Option B: Standalone AVR C Firmware
+
+```sh
+mkdir -p build
+avr-gcc -mmcu=atmega32u4 -Os -Wall -Wextra -o build/custom_kbr_default.elf firmware/standalone/main.c
+avr-objcopy -O ihex -R .eeprom build/custom_kbr_default.elf build/custom_kbr_default.hex
+scripts/flash.sh
+```
+
+Fn layer: F1–F12 on the number row, Fn+Esc = `` ` ``, arrows on WASD (Home/End on Q/E, PgUp/PgDn on R/F),
 Fn+Backspace = Del, Fn+[ / ] = PrtSc / Ins, mute/volume on M , . , play on Space, Fn+\ = bootloader.
 
-## Before ordering
+## Notes for Manufacturing
 
-- Open the board in KiCad and look at it. Autorouted boards work but are not pretty.
-  D+/D− run about 12 cm as a pair (the MCU is under the spacebar, the connector top-left); fine for full-speed USB.
-- No schematic is generated — the netlist lives in `generate_pcb.py`. DRC parity checks are therefore off.
-- Case fit is unverified against a real case: outline, holes and USB-C position match JP60 and the original GH60,
-  but GH60 cases differ in where their USB opening is. Check that yours has it top-left, behind Esc / 1.
-- If you use a commercial plate: JP60 also mounts the spacebar stabilizer upside down, so check that the plate's
-  spacebar cutouts suit that. The layout is standard ANSI 60%, which practically every 60% plate supports.
-- The hotswap footprint is generated from the commonly used Kailh CPG151101S11 dimensions. Print the board 1:1 and check it against a real socket before ordering.
-- Crystal load caps (18 pF) assume a standard 12 pF CL 3225 crystal; adjust for your part.
-- The VID/PID in `keyboard.json` are placeholders.
+- Always inspect the generated board in KiCad and run `scripts/fab.sh` (`0` DRC errors, `0` warnings) before ordering.
+  D+/D− run about 14 cm as a pair (the MCU is under the spacebar, the connector top-left); fine for full-speed USB.
+- No schematic file is generated — the netlist lives in `scripts/generate_pcb.py`.
+- The spacebar stabilizer mounts upside down (wire towards the back, like ai03's JP60) to clear the MCU under the spacebar;
+  standard universal 60% ANSI plates support this orientation.
+- Crystal load caps (`18 pF`) match a standard `CL = 12 pF` 3225 4-pad 16 MHz crystal (see `scripts/bom.py` for exact MPNs); adjust if your crystal differs.
+- The USB VID/PID in `keyboard.json` and `firmware/standalone/main.c` are hobbyist placeholders.
+
+## License
+
+- Scripts, PCB generator, case and firmware: MIT.
+- Outline, mounting hole coordinates and USB-C position derived from ai03's [JP60](https://github.com/ai03-2725/JP60) (MIT).
+- Footprints in `lib/kbr.pretty/` (other than the generated hotswap sockets) are vendored from the official KiCad library ([CC-BY-SA 4.0 with KiCad Library Exception](https://www.kicad.org/libraries/license/)).
