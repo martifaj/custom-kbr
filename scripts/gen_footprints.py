@@ -9,6 +9,7 @@ output lists the sockets as bottom-side parts. Origin = switch centre.
 Geometry below is in *real* coordinates (seen from the top, Y down); mirroring
 happens on write.
 """
+import math
 import os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -23,7 +24,13 @@ SOCKET_HOLE = 3.0
 SOCKET_PADS = {"1": (5.842, -5.08), "2": (-7.085, -2.54)}  # pad 1 = pin at (2.54, -5.08)
 SOCKET_PAD_SIZE = (2.55, 2.5)
 SOCKET_BODY = (-8.6, -7.3, 7.4, -0.3)            # courtyard: x0, y0, x1, y1
-SOCKET_OUTLINE = (-5.95, -6.95, 4.75, -0.6)      # plastic body (fab/silk outline)
+SOCKET_OUTLINE = (-5.95, -6.95, 4.75, -0.6)      # plastic body (fab outline)
+SOCKET_SILK_LINES = [                            # silk outline segments clearing pads and NPTH holes
+    (-5.55, -6.95, 4.3, -6.95),
+    (-5.55, -6.95, -5.55, -4.2),
+    (-3.9, -0.6, -2.2, -0.6),
+    (2.2, -0.6, 3.9, -0.6),
+]
 # PCB-mount (Cherry) stabilizer: x offset per key width; holes at y=-7.0 (3.05) and y=+8.24 (4.0)
 STAB_X = {2: 11.9, 2.25: 11.9, 2.75: 11.9, 6.25: 50.0, 7: 57.15}
 # Widths that also get a variant with the stabilizer upside down (holes mirrored in Y). On a
@@ -39,6 +46,22 @@ def _m(x):  # mirror x (front-side definition of a bottom-side part)
 def npth(x, y, d):
     return (f'\t(pad "" np_thru_hole circle (at {_m(x):.4f} {y:.4f}) (size {d} {d}) (drill {d})'
             f' (layers "*.Cu" "*.Mask"))\n')
+
+
+def keepout_circle(layer, cx, cy, r, n=24):
+    pts = " ".join(f"(xy {_m(cx) + r * math.cos(2 * math.pi * k / n):.4f}"
+                   f" {cy + r * math.sin(2 * math.pi * k / n):.4f})" for k in range(n))
+    return (f'\t(zone (net 0) (net_name "") (layer "{layer}") (hatch full 0.508)\n'
+            '\t\t(connect_pads (clearance 0)) (min_thickness 0.254) (filled_areas_thickness no)\n'
+            '\t\t(keepout (tracks not_allowed) (vias not_allowed) (pads allowed)'
+            ' (copperpour not_allowed) (footprints allowed))\n'
+            '\t\t(fill (thermal_gap 0.508) (thermal_bridge_width 0.508))\n'
+            f'\t\t(polygon (pts {pts})))\n')
+
+
+def line(layer, x0, y0, x1, y1, width):
+    return (f'\t(fp_line (start {_m(x0):.4f} {y0:.4f}) (end {_m(x1):.4f} {y1:.4f})'
+            f' (stroke (width {width}) (type solid)) (layer "{layer}"))\n')
 
 
 def rect(layer, x0, y0, x1, y1, width):
@@ -66,6 +89,7 @@ def footprint(w, flip_stab=False):
         for sx in (-STAB_X[w], STAB_X[w]):
             sy = -1 if flip_stab else 1
             s.append(npth(sx, -7.0 * sy, 3.05))
+            s.append(keepout_circle("F.Cu", sx, -7.0 * sy, 2.5))
             s.append(npth(sx, 8.24 * sy, 4.0))
     # socket pads
     for num, (x, y) in SOCKET_PADS.items():
@@ -74,7 +98,8 @@ def footprint(w, flip_stab=False):
     # socket body: courtyard + fab + silk
     s.append(rect("F.CrtYd", *SOCKET_BODY, 0.05))
     s.append(rect("F.Fab", *SOCKET_OUTLINE, 0.1))
-    s.append(rect("F.SilkS", *SOCKET_OUTLINE, 0.12))
+    for x0, y0, x1, y1 in SOCKET_SILK_LINES:
+        s.append(line("F.SilkS", x0, y0, x1, y1, 0.12))
     # keycap outline and switch housing for reference
     s.append(rect("Dwgs.User", -half, -9.525, half, 9.525, 0.1))
     s.append(rect("Dwgs.User", -7, -7, 7, 7, 0.1))

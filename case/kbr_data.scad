@@ -3,16 +3,18 @@
 // Origin = front-left PCB corner, Y towards the back (USB edge), mm.
 
 PCB_W = 285.0000;
-PCB_H = 95.1000;
+PCB_H = 94.6000;
 PCB_R = 2.0000;
 KEY_U = 19.05;
 
 // M2 mounting holes [x, y]
 PCB_HOLES = [
+    [3.8, 38.1],
     [25.2, 66.7],
     [128.2, 47.6],
     [190.5, 9.4],
-    [260.05, 66.7]
+    [260.05, 66.7],
+    [281.2, 38.1]
 ];
 
 // USB-C receptacle (HRO TYPE-C-31-M-12, bottom side): centre x and the y of its mouth

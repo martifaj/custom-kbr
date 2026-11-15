@@ -8,6 +8,7 @@ layout.py), so the case follows the PCB if anything moves. Plain text parsing, n
 OpenSCAD coordinates: origin at the front-left corner of the PCB, X right, Y towards
 the back (KiCad Y is flipped), Z up. The USB-C connector is on the back edge.
 """
+import math
 import os
 import re
 import sys
@@ -32,30 +33,43 @@ def footprints(text):
 
 
 def outline(text):
-    """Bounding box of Edge.Cuts (x0, y0, x1, y1) and the corner radius."""
-    xs, ys, r = [], [], 0.0
+    """Main board bounding box (x0, y0, x1, y1), corner radius, and side mounting slot centres."""
+    xs, ys, arcs, r = [], [], [], 0.0
     for m in re.finditer(r"\(gr_(line|arc)\s*\(start ([-\d.]+) ([-\d.]+)\).*?\(end ([-\d.]+) ([-\d.]+)\)"
                          r".*?\(layer \"([^\"]+)\"\)", text, re.S):
         kind, x0, y0, x1, y1, layer = m.groups()
         if layer != "Edge.Cuts":
             continue
         x0, y0, x1, y1 = map(float, (x0, y0, x1, y1))
-        xs += [x0, x1]
-        ys += [y0, y1]
-        if kind == "arc":
+        if kind == "line" and math.hypot(x1 - x0, y1 - y0) > 20.0:
+            xs += [x0, x1]
+            ys += [y0, y1]
+        elif kind == "arc":
+            arcs.append(((x0, y0), (x1, y1)))
             r = max(r, abs(x1 - x0))
-    return (min(xs), min(ys), max(xs), max(ys)), r
+    bx0, by0, bx1, by1 = min(xs), min(ys), max(xs), max(ys)
+    # Side mounting slots: pairs of arcs sharing an interior apex inside the main board box
+    slots = []
+    for i, (a0, a1) in enumerate(arcs):
+        for b0, b1 in arcs[i + 1:]:
+            for shared, oa, ob in ([(a0, a1, b1)] if a0 == b0 else
+                                   [(a0, a1, b0)] if a0 == b1 else
+                                   [(a1, a0, b1)] if a1 == b0 else
+                                   [(a1, a0, b0)] if a1 == b1 else ()):
+                if bx0 < shared[0] < bx1 and by0 < shared[1] < by1:
+                    slots.append(((oa[0] + ob[0]) / 2, (oa[1] + ob[1]) / 2))
+    return (bx0, by0, bx1, by1), r, slots
 
 
 def main():
     text = open(PCB).read()
-    (bx0, by0, bx1, by1), radius = outline(text)
+    (bx0, by0, bx1, by1), radius, slots = outline(text)
     w, h = bx1 - bx0, by1 - by0
 
     def xy(x, y):  # KiCad -> OpenSCAD
         return round(x - bx0, 4), round(by1 - y, 4)
 
-    holes, usb, reset, switches = [], None, None, {}
+    holes, usb, reset, switches = [xy(x, y) for x, y in slots], None, None, {}
     for name, ref, x, y in footprints(text):
         if name.startswith("SW_MX_Hotswap"):
             switches[int(ref[2:])] = (x, y, "_FlippedStab" in name)

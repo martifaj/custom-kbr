@@ -122,5 +122,5 @@ Fn+Backspace = Del, Fn+[ / ] = PrtSc / Ins, mute/volume on M , . , play on Space
 - If you use a commercial plate: JP60 also mounts the spacebar stabilizer upside down, so check that the plate's
   spacebar cutouts suit that. The layout is standard ANSI 60%, which practically every 60% plate supports.
 - The hotswap footprint is generated from the commonly used Kailh CPG151101S11 dimensions. Print the board 1:1 and check it against a real socket before ordering.
-- Crystal load caps (22 pF) assume a ~18–20 pF CL crystal; adjust for your part.
+- Crystal load caps (18 pF) assume a standard 12 pF CL 3225 crystal; adjust for your part.
 - The VID/PID in `keyboard.json` are placeholders.

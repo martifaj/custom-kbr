@@ -41,7 +41,7 @@ NETCLASSES = {  # name: (track, clearance, via diameter, via drill) in mm
     "Power": (0.25, 0.15, 0.7, 0.35),
     "USB": (0.25, 0.15, 0.6, 0.3),
 }
-NETCLASS_PATTERNS = {"GND": "Power", "+5V": "Power", "VBUS": "Power",
+NETCLASS_PATTERNS = {"GND": "Power", "GND_*": "Power", "+5V": "Power", "VBUS": "Power",
                      "USB_DP": "USB", "USB_DN": "USB", "U_DP": "USB", "U_DN": "USB"}
 MIN_RULES = {  # JLCPCB / PCBWay standard 2-layer capabilities, with margin
     "min_clearance": 0.15, "min_track_width": 0.15, "min_via_diameter": 0.5,
@@ -191,6 +191,22 @@ class BoardBuilder:
                 poly.Append(mm(x), mm(y))
             self.board.Add(z)
 
+    def circle_keepout(self, cx, cy, r, layer, n=24):
+        z = pcbnew.ZONE(self.board)
+        z.SetIsRuleArea(True)
+        z.SetLayer(layer)
+        z.SetDoNotAllowTracks(True)
+        z.SetDoNotAllowVias(True)
+        z.SetDoNotAllowPads(False)
+        z.SetDoNotAllowFootprints(False)
+        z.SetDoNotAllowCopperPour(True)
+        poly = z.Outline()
+        poly.NewOutline()
+        for k in range(n):
+            a = 2 * math.pi * k / n
+            poly.Append(mm(cx + r * math.cos(a)), mm(cy + r * math.sin(a)))
+        self.board.Add(z)
+
     def zone(self, net, layer, bbox):
         """Pour over the outline's bounding box; the filler clips it to the board edge."""
         z = pcbnew.ZONE(self.board)
@@ -296,7 +312,11 @@ OUTLINE = [
 ]
 # GH60 standard holes (JP60 leaves the one next to the spacebar undrilled; it's drilled here)
 MOUNT_HOLES = [(25.575, 28.225), (260.425, 28.225), (128.575, 47.325), (190.875, 85.525)]
+SIDE_SLOTS = [(4.175, 56.825), (281.575, 56.825)]
 STANDOFF_R = 2.5        # case standoff radius: bottom-side parts must stay this far from a hole
+# Four semicircular PCB support ledges on the top and bottom inner case walls (bottom side only)
+CASE_TABS = [(64.5, 2.8), (220.0, 2.8), (43.5, 93.8), (242.5, 93.8)]
+TAB_R = 3.2
 # Same position as JP60 (same receptacle): the mouth sticks out 1.1 mm past the USB tab
 # and the front shield pins stay 0.7 mm from the edge.
 USB_POS = (18.574, 2.373)  # HRO TYPE-C-31-M-12, between Esc and 1
@@ -329,15 +349,18 @@ def rect_distance(x, y, r):
 
 def rotated_keys():
     """Keys whose switch is turned 180 degrees: the two under the USB-C receptacle, plus any
-    key whose socket would sit on a case standoff."""
+    key whose socket would sit on a case standoff or wall support tab."""
     rot = {k.label for k in KEYS if k.label in USB_KEYS}
-    for hx, hy in MOUNT_HOLES:
+    supports = [(hx, hy, STANDOFF_R) for hx, hy in MOUNT_HOLES + SIDE_SLOTS] + [
+        (tx, ty, TAB_R) for tx, ty in CASE_TABS
+    ]
+    for hx, hy, rad in supports:
         for k in KEYS:
             cx, cy = key_center(k)
-            if min(rect_distance(hx, hy, r) for r in socket_rects(cx, cy, k.label in rot)) >= STANDOFF_R:
+            if min(rect_distance(hx, hy, r) for r in socket_rects(cx, cy, k.label in rot)) >= rad:
                 continue
             if k.label in rot or k.w != 1 or \
-               min(rect_distance(hx, hy, r) for r in socket_rects(cx, cy, True)) < STANDOFF_R:
+               min(rect_distance(hx, hy, r) for r in socket_rects(cx, cy, True)) < rad:
                 sys.exit(f"mounting hole ({hx}, {hy}) collides with the socket of {k.label!r}")
             rot.add(k.label)
     return rot
@@ -373,16 +396,19 @@ def place_matrix(bb):
             fp = bb.footprint(f"SW_Cherry_MX_{k.w:.2f}u_PCB", f"SW{i}", value, 0, 0, pads=pads)
             dx, dy = switch_center_offset(fp)
             fp.SetPosition(pt(cx - dx, cy - dy))
-        # Diode in the half of the key the socket leaves free. Under the USB-C receptacle
-        # that half is taken too, so those go on the row gap below.
+        # Diode in the half of the key the socket leaves free. On row 0 (under the USB-C
+        # receptacle or top-wall support tabs) that upper half is taken too, so those go on
+        # the row gap below.
         dx, dy = DIODE_OFFSET
-        if k.label in USB_KEYS and k.label in rot:
+        if k.row == 0 and k.label in rot:
             dx, dy = 0.0, 9.525
         elif k.label in rot:
             dx, dy = -dx, -dy
         # COL2ROW: column -> switch -> diode anode (pad 2) -> cathode (pad 1) -> row
-        bb.footprint("D_SOD-123", f"D{i}", "1N4148W", cx + dx, cy + dy,
-                     back=True, pads={"1": row_net, "2": mid_net})
+        dfp = bb.footprint("D_SOD-123", f"D{i}", "1N4148W", cx + dx, cy + dy,
+                           back=True, pads={"1": row_net, "2": mid_net})
+        if k.row == 0 and k.label in rot:
+            dfp.Reference().SetPosition(pt(cx + dx + 3.9, cy + dy))
 
 
 def place_usb(bb):
@@ -402,7 +428,7 @@ def place_usb(bb):
     # USBLC6-2SC6: 1/6 = I/O1, 3/4 = I/O2, 2 = GND, 5 = VBUS. The two channels are identical;
     # D+ on I/O1 lets the pre-routed pair come in from the right without crossing.
     bb.footprint("SOT-23-6", "U2", "USBLC6-2SC6", x + 9.0, 4.0, back=True,
-                 pads={"1": "USB_DP", "6": "USB_DP", "3": "USB_DN", "4": "USB_DN", "2": "GND", "5": "+5V"})
+                 pads={"1": "USB_DP", "6": "USB_DP", "3": "USB_DN", "4": "USB_DN", "2": "GND", "5": "VBUS"})
     bb.footprint("R_0603_1608Metric", "R5", "5.1k", x - 13.5, 4.0, rot=90, back=True, pads={"1": "CC1", "2": "GND"})
     # 16.5 mm out: the pre-routed D+/D- pair comes into U2 from the right
     bb.footprint("R_0603_1608Metric", "R6", "5.1k", x + 16.5, 4.0, rot=90, back=True, pads={"1": "CC2", "2": "GND"})
@@ -418,26 +444,30 @@ def place_mcu(bb):
     u1 = bb.footprint("QFN-44-1EP_7x7mm_P0.5mm_EP5.2x5.2mm", "U1", "ATmega32U4-MU", mx, my, back=True,
                       pads={str(p): n for p, n in MCU_FIXED.items()})
 
-    def part(fp, ref, value, dx, dy, rot, pads):
-        bb.footprint(fp, ref, value, mx + dx, my + dy, rot=rot, back=True, pads=pads)
+    def part(fp, ref, value, dx, dy, rot, pads, ref_offset=None):
+        f = bb.footprint(fp, ref, value, mx + dx, my + dy, rot=rot, back=True, pads=pads)
+        if ref_offset is not None:
+            f.Reference().SetPosition(pt(mx + dx + ref_offset[0], my + dy + ref_offset[1]))
+        return f
 
     R, C = "R_0603_1608Metric", "C_0603_1608Metric"
-    # bottom: crystal, VCC decoupling, reset pull-up
+    # bottom: crystal, VCC decoupling, reset pull-up. Y1 pin 3 (top-left) = XTAL1 (left),
+    # pin 1 (bottom-right) = XTAL2 (right), so XTAL1/XTAL2 fan out without crossing.
     part("Crystal_SMD_3225-4Pin_3.2x2.5mm", "Y1", "16MHz", -1.6, 7.8, 0,
-         {"1": "XTAL1", "3": "XTAL2", "2": "GND", "4": "GND"})
-    part(C, "C1", "22pF", -5.4, 7.8, 90, {"1": "XTAL1", "2": "GND"})
-    part(C, "C2", "22pF", -1.6, 11.4, 0, {"1": "XTAL2", "2": "GND"})
-    part(C, "C3", "100nF", 2.2, 6.8, 90, {"1": "+5V", "2": "GND"})
-    part("C_0805_2012Metric", "C7", "10uF", 4.6, 7.6, 90, {"1": "+5V", "2": "GND"})
-    part(R, "R1", "10k", 7.0, 6.8, 90, {"1": "+5V", "2": "RESET"})
+         {"3": "XTAL1", "1": "XTAL2", "2": "GND", "4": "GND"})
+    part(C, "C1", "18pF", -5.4, 7.8, -90, {"1": "XTAL1", "2": "GND"}, ref_offset=(-1.7, 0.0))
+    part(C, "C2", "18pF", -1.6, 11.4, 0, {"1": "XTAL2", "2": "GND"}, ref_offset=(-2.4, 0.0))
+    part(C, "C3", "100nF", 2.2, 6.8, 90, {"1": "+5V", "2": "GND"}, ref_offset=(0.0, 2.1))
+    part("C_0805_2012Metric", "C7", "10uF", 4.6, 7.6, 90, {"1": "+5V", "2": "GND"}, ref_offset=(0.0, 2.9))
+    part(R, "R1", "10k", 7.0, 6.8, 90, {"1": "+5V", "2": "RESET"}, ref_offset=(0.0, 2.1))
     part("SW_SPST_SKQG_WithoutStem", "SW0", "RESET", 13.5, 7.8, 0, {"1": "RESET", "2": "GND"})
     # right (pins 1-11): UVCC decoupling, UCAP, USB series resistors
-    part(C, "C9", "100nF", 6.8, -4.0, 0, {"1": "+5V", "2": "GND"})
+    part(C, "C9", "100nF", 6.8, -4.0, 0, {"1": "+5V", "2": "GND"}, ref_offset=(0.8, -1.4))
     # below-right corner, so pins 5-11 keep a clear escape path to the right
     part(C, "C8", "1uF", 5.4, 4.2, 90, {"1": "UCAP", "2": "GND"})
     # rotated 180 so pad 1 (MCU side) faces U1 once mirrored onto the bottom
-    part(R, "R3", "22R", 10.3, -1.9, 180, {"1": "U_DN", "2": "USB_DN"})
-    part(R, "R4", "22R", 10.3, -0.1, 180, {"1": "U_DP", "2": "USB_DP"})
+    part(R, "R3", "22R", 10.3, -1.9, 180, {"1": "U_DN", "2": "USB_DN"}, ref_offset=(0.0, -1.4))
+    part(R, "R4", "22R", 10.3, -0.1, 180, {"1": "U_DP", "2": "USB_DP"}, ref_offset=(0.0, 1.4))
     # top (pins 34-44): VCC/AVCC decoupling
     # out at the corners: pins 36-41 (matrix) need the whole top side to fan out
     part(C, "C4", "100nF", -5.0, -6.2, 0, {"1": "+5V", "2": "GND"})
@@ -446,12 +476,22 @@ def place_mcu(bb):
     part(C, "C5", "100nF", -6.6, 3.2, 0, {"1": "+5V", "2": "GND"})
     part(R, "R2", "10k", -6.6, -3.6, 0, {"1": "HWB", "2": "GND"})
     ground_mcu(bb, u1)
+    # Pre-route XTAL1 (pin 17 -> Y1.3 -> C1.1) and XTAL2 (pin 16 -> Y1.1 -> C2.1) cleanly on B.Cu
+    for net, pts in (("XTAL1", [(104.0, 85.2375), (104.0, 86.15), (101.3, 88.85), (98.675, 88.85), (98.6, 88.925)]),
+                     ("XTAL2", [(104.5, 85.2375), (104.5, 89.55), (103.5, 90.55),
+                                (103.5, 92.975), (103.175, 93.3)])):
+        for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+            bb.track(x0, y0, x1, y1, pcbnew.B_Cu, 0.2, net, locked=True)
     # UCAP (pin 6, middle of the right side) to C8 would cut across the fan-out of
-    # pins 7-11 on the bottom layer: give it a short stub and a via to the top layer.
+    # pins 7-11 on the bottom layer: hop over F.Cu between U1.6 and C8.1.
     px, py = to_mm(next(p for p in u1.Pads() if p.GetNumber() == "6").GetPosition())
     vx = px + 1.55
     bb.track(px, py, vx, py, pcbnew.B_Cu, 0.2, "UCAP", locked=True)
     bb.via(vx, py, "UCAP", locked=True)
+    bb.track(vx, py, 108.5, py + (vx - 108.5), pcbnew.F_Cu, 0.2, "UCAP", locked=True)
+    bb.track(108.5, py + (vx - 108.5), 108.5, 86.875, pcbnew.F_Cu, 0.2, "UCAP", locked=True)
+    bb.via(108.5, 86.875, "UCAP", locked=True)
+    bb.track(108.5, 86.875, 109.4, 86.875, pcbnew.B_Cu, 0.2, "UCAP", locked=True)
     # D-/D+ (pins 3/4) to their 22R series resistors as a parallel pair, pre-routed:
     # the autorouter otherwise tangles them with UVCC/UCAP in this corner.
     for pin, ref in (("3", "R3"), ("4", "R4")):
@@ -465,23 +505,90 @@ def place_mcu(bb):
 
 
 def ground_mcu(bb, u1):
-    """Tie every QFN GND pin inward to the exposed pad and drop vias in the pad to the
-    pours. Ground then needs no fan-out, which leaves room for the signal pins next to
-    it (otherwise e.g. pin 36 gets fenced in). Locked so Freerouting keeps them."""
+    """Tie every QFN GND pin inward to the exposed pad (connected at its origin so
+    Specctra/Freerouting sees the net as internally tied) and drop vias in the pad to
+    the pours. Ground then needs no fan-out, which leaves room for the signal pins."""
     cx, cy = to_mm(u1.GetPosition())
     for pad in u1.Pads():
         if pad.GetNetname() != "GND" or pad.GetNumber() == "45":
             continue
         px, py = to_mm(pad.GetPosition())
-        # straight in towards the centre, ending well inside the exposed pad (5.2 mm square)
+        # straight in towards the centre, then to pad 45 origin inside the 5.2 mm square
         if abs(px - cx) > abs(py - cy):
             ex, ey = cx + math.copysign(2.0, px - cx), py
         else:
             ex, ey = px, cy + math.copysign(2.0, py - cy)
         bb.track(px, py, ex, ey, pcbnew.B_Cu, 0.25, "GND", locked=True)
+        bb.track(ex, ey, cx, cy, pcbnew.B_Cu, 0.25, "GND", locked=True)
     for dx in (-1.3, 1.3):
         for dy in (-1.3, 1.3):
             bb.via(cx + dx, cy + dy, "GND", locked=True)
+            bb.track(cx + dx, cy + dy, cx, cy, pcbnew.B_Cu, 0.25, "GND", locked=True)
+
+
+def ground_board(bb):
+    """Tie every non-MCU GND pad to a local locked GND via (or J1 TH shield pad), each in
+    its own temporary GND_k net during autorouting so Freerouting does not daisy-chain
+    GND across the board before the copper pours are added."""
+    board = bb.board
+
+    def set_pads(net, specs):
+        for ref, num, xy in specs:
+            fp = board.FindFootprintByReference(ref)
+            for p in fp.Pads():
+                if p.GetNumber() == num and (xy is None or math.dist(to_mm(p.GetPosition()), xy) < 0.2):
+                    p.SetNet(bb.net(net))
+
+    groups = [
+        # J1 left shield + A1/B12 (top TH shield pad in its own group; both S1 pads hit F.Cu & B.Cu pours)
+        ([("J1", "A1", None), ("J1", "B12", None), ("J1", "S1", (14.254, 5.503))],
+         [((15.324, 6.418), (14.254, 5.503))], None),
+        ([("J1", "S1", (14.254, 1.323))], [], None),
+        # J1 right shield + A12/B1
+        ([("J1", "A12", None), ("J1", "B1", None), ("J1", "S1", (22.894, 5.503))],
+         [((21.824, 6.418), (22.894, 5.503))], None),
+        ([("J1", "S1", (22.894, 1.323))], [], None),
+        ([("R5", "2", None)], [((5.074, 3.175), (5.074, 2.0))], (5.074, 2.0)),
+        ([("R6", "2", None)], [((35.074, 3.175), (35.074, 2.0))], (35.074, 2.0)),
+        ([("U2", "2", None)], [((28.7115, 4.0), (29.9, 4.0))], (29.9, 4.0)),
+        # Y1 + C1 + C2 ground cluster
+        ([("Y1", "2", None), ("Y1", "4", None), ("C1", "2", None), ("C2", "2", None)],
+         [((103.5, 88.85), (101.3, 90.55)), ((101.3, 90.55), (98.675, 90.55)), ((98.675, 90.55), (98.6, 90.475)),
+          ((101.3, 90.55), (101.625, 90.875)), ((101.625, 90.875), (101.625, 93.3)),
+          ((101.3, 90.55), (100.0, 91.85))], (100.0, 91.85)),
+        # C3 + C7 ground cluster
+        ([("C3", "2", None), ("C7", "2", None)],
+         [((106.2, 87.925), (107.4, 87.925)), ((107.4, 87.925), (108.025, 88.55)), ((108.025, 88.55), (108.6, 88.55))],
+         (107.4, 87.925)),
+        # SW0 both pad 2s
+        ([("SW0", "2", None)],
+         [((114.4, 91.55), (117.5, 91.55)), ((117.5, 91.55), (120.6, 91.55))], (117.5, 91.55)),
+        ([("C8", "2", None)], [((109.4, 85.325), (110.6, 85.325))], (110.6, 85.325)),
+        ([("C9", "2", None)], [((110.025, 77.9), (110.025, 79.1))], (110.025, 79.1)),
+        ([("C6", "2", None)], [((108.225, 75.7), (108.225, 74.5))], (108.225, 74.5)),
+        ([("C4", "2", None)], [((98.225, 75.7), (98.225, 74.5))], (98.225, 74.5)),
+        ([("R2", "2", None)], [((96.575, 78.3), (95.3, 78.3))], (95.3, 78.3)),
+        ([("C5", "2", None)], [((96.625, 85.1), (95.3, 85.1))], (95.3, 85.1)),
+    ]
+    for idx, (pads, segs, via_xy) in enumerate(groups, start=1):
+        net = f"GND_{idx}"
+        set_pads(net, pads)
+        for (x0, y0), (x1, y1) in segs:
+            bb.track(x0, y0, x1, y1, pcbnew.B_Cu, 0.25, net, locked=True)
+        if via_xy is not None:
+            bb.via(*via_xy, net, locked=True)
+
+
+def merge_gnd_nets(board):
+    """Merge temporary GND_* nets back into GND before pouring the ground planes."""
+    gnd = board.FindNet("GND")
+    for fp in board.GetFootprints():
+        for p in fp.Pads():
+            if p.GetNetname().startswith("GND_"):
+                p.SetNet(gnd)
+    for t in board.GetTracks():
+        if t.GetNetname().startswith("GND_"):
+            t.SetNet(gnd)
 
 
 def assign_matrix_pins(bb, u1):
@@ -551,9 +658,15 @@ def _centroid(points):
 
 
 def place_mounting_holes(bb):
-    """M2 holes at the GH60 positions (non-plated: hotswap sockets come close to some)."""
+    """M2 holes at the GH60 positions (non-plated: hotswap sockets come close to some),
+    plus copper keep-outs at the two GH60 side mounting slots and four wall support tabs."""
     for i, (x, y) in enumerate(MOUNT_HOLES, start=1):
         bb.footprint("MountingHole_2.2mm_M2", f"H{i}", "M2", x, y)
+    for x, y in SIDE_SLOTS:
+        bb.circle_keepout(x, y, 2.2, pcbnew.F_Cu)
+        bb.circle_keepout(x, y, STANDOFF_R, pcbnew.B_Cu)
+    for x, y in CASE_TABS:
+        bb.circle_keepout(x, y, TAB_R, pcbnew.B_Cu)
     return MOUNT_HOLES
 
 
@@ -568,11 +681,18 @@ class _CopperMap:
 
     def __init__(self, board, edge_margin):
         self.items = []  # (shape, on_front, on_back, clearance, net)
+        for x, y in MOUNT_HOLES + SIDE_SLOTS:
+            self.items.append((("circle", x, y, STANDOFF_R), True, True, 0.2, ""))
+        for x, y in CASE_TABS:
+            self.items.append((("circle", x, y, TAB_R), False, True, 0.2, ""))
         for fp in board.GetFootprints():
             for p in fp.Pads():
                 x, y = to_mm(p.GetPosition())
                 if p.GetAttribute() == pcbnew.PAD_ATTRIB_NPTH:
-                    self.items.append((("circle", x, y, pcbnew.ToMM(p.GetDrillSize().x) / 2), True, True, 0.3, ""))
+                    drill = pcbnew.ToMM(p.GetDrillSize().x)
+                    self.items.append((("circle", x, y, drill / 2), True, True, 0.3, ""))
+                    if abs(drill - 3.05) < 0.05:  # stabilizer M2 screw head keep-out on B.Cu
+                        self.items.append((("circle", x, y, STANDOFF_R), False, True, 0.2, ""))
                     continue
                 front, back = p.IsOnLayer(pcbnew.F_Cu), p.IsOnLayer(pcbnew.B_Cu)
                 if p.GetShape() == pcbnew.PAD_SHAPE_CIRCLE:
@@ -792,6 +912,36 @@ def route_usb_pair(bb):
             length += math.hypot(bx - ax, by - ay) / 2
         for v in (start_vias[net], end_vias[net]):
             bb.via(*v, net, size=via_d, drill=via_drill, locked=True)
+    # J1 -> U2 flow-through on B.Cu (entering U2 on pins 6/4 and exiting on pins 1/3)
+    b_paths = [
+        ("USB_DP", [(18.324, 6.418), (18.324, 5.35), (19.324, 5.35), (19.324, 6.418),
+                    (19.324, 7.65), (19.824, 8.15), (22.10, 8.15), (24.75, 5.50),
+                    (24.75, 3.05), (26.4365, 3.05), (28.7115, 3.05)]),
+        ("USB_DN", [(17.824, 6.418), (17.824, 7.50), (18.824, 7.50), (18.824, 6.418)]),
+        ("USB_DN", [(18.824, 7.50), (18.824, 7.85), (19.574, 8.60), (22.55, 8.60),
+                    (26.20, 4.95), (26.4365, 4.95), (28.7115, 4.95)]),
+        # VBUS: F1.1 <-> J1.A4/B9 <-> J1.A9/B4 on B.Cu, and hop on F.Cu to U2.5
+        ("VBUS", [(10.974, 4.0), (15.924, 4.0), (16.524, 4.6), (16.524, 5.4), (16.124, 5.8), (16.124, 6.418)]),
+        ("VBUS", [(16.524, 4.6), (20.1, 4.6), (20.6, 5.1), (20.6, 5.4), (21.024, 5.824), (21.024, 6.418)]),
+        ("VBUS", [(20.1, 4.6), (20.1, 3.5)]),
+        ("VBUS", [(25.5, 4.0), (26.4365, 4.0)]),
+    ]
+    for net, path in b_paths:
+        for (ax, ay), (bx, by) in zip(path, path[1:]):
+            bb.track(ax, ay, bx, by, pcbnew.B_Cu, width, net, locked=True)
+    for (ax, ay), (bx, by) in [((20.1, 3.5), (25.0, 3.5)), ((25.0, 3.5), (25.5, 4.0))]:
+        bb.track(ax, ay, bx, by, pcbnew.F_Cu, width, "VBUS", locked=True)
+    for vx_v, vy_v in ((20.1, 3.5), (25.5, 4.0)):
+        bb.via(vx_v, vy_v, "VBUS", size=0.6, drill=0.3, locked=True)
+    # CC2: J1.B5 (20.324, 6.418) -> R6.1 (35.074, 4.825) via F.Cu hop above SW2 center hole
+    bb.track(20.324, 6.418, 20.324, 7.55, pcbnew.B_Cu, 0.2, "CC2", locked=True)
+    bb.via(20.324, 7.55, "CC2", size=0.6, drill=0.3, locked=True)
+    for (ax, ay), (bx, by) in [((20.324, 7.55), (20.924, 6.95)),
+                               ((20.924, 6.95), (31.699, 6.95)),
+                               ((31.699, 6.95), (33.824, 4.825))]:
+        bb.track(ax, ay, bx, by, pcbnew.F_Cu, 0.2, "CC2", locked=True)
+    bb.via(33.824, 4.825, "CC2", size=0.6, drill=0.3, locked=True)
+    bb.track(33.824, 4.825, 35.074, 4.825, pcbnew.B_Cu, 0.2, "CC2", locked=True)
     print(f"USB pair pre-routed on F.Cu: {len(pts) - 1} segments, {length:.0f} mm")
 
 
@@ -893,9 +1043,13 @@ def freerouting_cmd():
 
 
 def remove_dangling(board):
-    """Delete track segments with an end that touches nothing (Freerouting leaves a few
-    short stubs behind). Repeats until stable; returns the number removed."""
+    """Delete sub-micron (<0.01 mm) track segments and segments with an end that touches
+    nothing (Freerouting leaves a few short stubs behind). Repeats until stable."""
     removed = 0
+    for t in [t for t in board.GetTracks() if t.GetClass() == "PCB_TRACK"]:
+        if (t.GetEnd() - t.GetStart()).EuclideanNorm() < mm(0.01):
+            board.Remove(t)
+            removed += 1
     while True:
         tracks = [t for t in board.GetTracks() if t.GetClass() == "PCB_TRACK"]
         items = list(board.GetTracks()) + [p for fp in board.GetFootprints() for p in fp.Pads()]
@@ -1034,6 +1188,12 @@ class _Obstacles:
         if not (bx0 + 0.6 < x < bx0 + pcbnew.ToMM(self.bounds.GetWidth()) - 0.6 and
                 by0 + 0.6 < y < by0 + pcbnew.ToMM(self.bounds.GetHeight()) - 0.6):
             return False
+        if any(math.hypot(x - hx, y - hy) < STANDOFF_R + radius + self.clearance
+               for hx, hy in MOUNT_HOLES + SIDE_SLOTS):
+            return False
+        if layer == pcbnew.B_Cu and any(math.hypot(x - tx, y - ty) < TAB_R + radius + self.clearance
+                                        for tx, ty in CASE_TABS):
+            return False
         v = pt(x, y)
         acc = mm(radius + self.clearance)
         return not any(it.HitTest(v, acc) for it in self.items[layer])
@@ -1129,6 +1289,7 @@ def main():
         for z in [z for z in board.Zones() if not z.GetIsRuleArea()]:
             board.Delete(z)
         route_until_done(board, args.passes, args.route_timeout)
+        merge_gnd_nets(board)
         save_board(board, PCB_PATH)
         add_gnd_pours(PCB_PATH)
         return
@@ -1140,6 +1301,7 @@ def main():
     place_matrix(bb)
     place_usb(bb)
     u1 = place_mcu(bb)
+    ground_board(bb)
     pinmap = assign_matrix_pins(bb, u1)
     holes = place_mounting_holes(bb)
     setup_rules(bb.board)
@@ -1160,6 +1322,7 @@ def main():
         write_project_rules(snapshot.replace(".kicad_pcb", ".kicad_pro"))
         route_until_done(bb.board, args.passes, args.route_timeout)
 
+    merge_gnd_nets(bb.board)
     save_board(bb.board, PCB_PATH)
     add_gnd_pours(PCB_PATH)
 
@@ -1171,10 +1334,58 @@ def add_gnd_pours(path):
     bb = BoardBuilder()
     bb.board = board
     bb.nets = {"GND": board.FindNet("GND")}
-    bb.zone("GND", pcbnew.F_Cu, outline_bbox(OUTLINE))
-    bb.zone("GND", pcbnew.B_Cu, outline_bbox(OUTLINE))
+    z_f = bb.zone("GND", pcbnew.F_Cu, outline_bbox(OUTLINE))
+    z_b = bb.zone("GND", pcbnew.B_Cu, outline_bbox(OUTLINE))
     board.BuildConnectivity()
-    pcbnew.ZONE_FILLER(board).Fill(board.Zones())
+    filler = pcbnew.ZONE_FILLER(board)
+    filler.Fill(board.Zones())
+
+    # Stitch any isolated GND pour islands to a connected GND pour island on the opposite layer
+    gnd_code = bb.nets["GND"].GetNetCode()
+    vias = [t.GetPosition() for t in board.GetTracks()
+            if t.GetClass() == "PCB_VIA" and t.GetNetCode() == gnd_code]
+    f_poly = z_f.GetFilledPolysList(pcbnew.F_Cu)
+    b_poly = z_b.GetFilledPolysList(pcbnew.B_Cu)
+    f_outs = [f_poly.Outline(i) for i in range(f_poly.OutlineCount())]
+    b_outs = [b_poly.Outline(i) for i in range(b_poly.OutlineCount())]
+    if f_outs and b_outs:
+        f_main = max(range(len(f_outs)), key=lambda i: f_outs[i].BBox().GetWidth())
+        b_main = max(range(len(b_outs)), key=lambda i: b_outs[i].BBox().GetWidth())
+        f_conn, b_conn = {f_main}, {b_main}
+        changed = True
+        while changed:
+            changed = False
+            for v in vias:
+                fi = next((i for i, o in enumerate(f_outs) if o.PointInside(v)), None)
+                bi = next((i for i, o in enumerate(b_outs) if o.PointInside(v)), None)
+                if fi is not None and bi is not None and ((fi in f_conn) != (bi in b_conn)):
+                    f_conn.add(fi)
+                    b_conn.add(bi)
+                    changed = True
+        cands = [it for it in list(board.GetTracks()) + [p for fp in board.GetFootprints() for p in fp.Pads()]
+                 if it.GetNetCode() != gnd_code]
+        stitched = False
+        for fi, fo in enumerate(f_outs):
+            if fi in f_conn:
+                continue
+            box = fo.BBox()
+            found = False
+            for xi in range(int(box.GetLeft() / 1e6) * 2, int(box.GetRight() / 1e6) * 2 + 1):
+                for yi in range(int(box.GetTop() / 1e6) * 2, int(box.GetBottom() / 1e6) * 2 + 1):
+                    x, y = xi * 0.5, yi * 0.5
+                    p = pt(x, y)
+                    if (fo.PointInside(p)
+                            and any(b_outs[bi].PointInside(p) for bi in b_conn)
+                            and not any(it.HitTest(p, mm(0.6)) for it in cands)):
+                        bb.via(x, y, "GND", locked=True)
+                        stitched = found = True
+                        break
+                if found:
+                    break
+        if stitched:
+            board.BuildConnectivity()
+            filler.Fill(board.Zones())
+
     save_board(board, path)
     print("wrote", path)
 
