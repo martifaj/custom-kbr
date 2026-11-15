@@ -45,14 +45,15 @@ _COLS = [
     [0, 1, 2, 6, 10, 11, 12, 13],
 ]
 
-# Fn layer for the default QMK keymap: F-keys on the number row, arrows on IJKL with
-# Home/PgUp/PgDn/End around them, media on the bottom right, bootloader on Fn+\\.
+# Fn layer for the default QMK keymap: F-keys on the number row, arrows on WASD with
+# Home/End on Q/E and PgUp/PgDn on R/F, media on the bottom right, bootloader on Fn+\\.
 _FN_LAYER = {
     "Esc": "KC_GRV", "1": "KC_F1", "2": "KC_F2", "3": "KC_F3", "4": "KC_F4",
     "5": "KC_F5", "6": "KC_F6", "7": "KC_F7", "8": "KC_F8", "9": "KC_F9",
     "0": "KC_F10", "-": "KC_F11", "=": "KC_F12", "Backspace": "KC_DEL",
-    "Y": "KC_HOME", "U": "KC_PGUP", "I": "KC_UP", "O": "KC_PGDN", "P": "KC_END",
-    "J": "KC_LEFT", "K": "KC_DOWN", "L": "KC_RGHT", "[": "KC_PSCR", "]": "KC_INS",
+    "Q": "KC_HOME", "W": "KC_UP", "E": "KC_END", "R": "KC_PGUP",
+    "A": "KC_LEFT", "S": "KC_DOWN", "D": "KC_RGHT", "F": "KC_PGDN",
+    "[": "KC_PSCR", "]": "KC_INS",
     "\\": "QK_BOOT", "M": "KC_MUTE", ",": "KC_VOLD", ".": "KC_VOLU", "Space": "KC_MPLY",
 }
 
